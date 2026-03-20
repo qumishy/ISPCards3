@@ -1,31 +1,32 @@
-name: Native Android Build
+name: Android Build
 on:
-  workflow_dispatch: # للتشغيل اليدوي من Termux
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          node-version: 18
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
 
       - name: Install Dependencies
         run: npm install
 
-      - name: Build Android Release
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease
+      - name: Build APK Locally on Worker
+        run: npx eas build --platform android --profile preview --local
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: android/app/build/outputs/apk/release/*.apk
+          path: "*.apk"
