@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "نظام الكروت",
+    "slug": "isp-cards-system",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0f1e"
+    },
+    "android": {
+      "package": "com.ispcards.app",
+      "permissions": [],
+      "minSdkVersion": 24,
+      "targetSdkVersion": 34,
+      "splash": {
+        "resizeMode": "contain",
+        "backgroundColor": "#0a0f1e"
+      }
+    },
+    "plugins": [],
+    "extra": {
+      "eas": {
+        "projectId": "8c413023-f816-4d70-8439-01a5df772c35"
+      }
+    }
+  }
+}
