@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
-import { execSQL } from './database';
-import { initialSync, startNetworkMonitor, stopNetworkMonitor, isOnline } from './SyncService';
+import { startNetworkMonitor, stopNetworkMonitor, isOnline } from './SyncService';
 
 const AuthContext = createContext(null);
 
@@ -15,6 +14,7 @@ export const ROLE_PERMISSIONS = {
     canViewPOS:true, canManagePOS:true,
     canViewReports:true, canViewAdmin:true,
     canManageUsers:true, canManageSettings:true, canManageWallets:true,
+    canDeleteInvoice:true,
   },
   cashier: {
     label:'محاسب / مدير صندوق',
@@ -24,6 +24,7 @@ export const ROLE_PERMISSIONS = {
     canViewPOS:true, canManagePOS:false,
     canViewReports:true, canViewAdmin:false,
     canManageUsers:false, canManageSettings:false, canManageWallets:true,
+    canDeleteInvoice:false,
   },
   agent: {
     label:'مندوب مبيعات',
@@ -33,6 +34,7 @@ export const ROLE_PERMISSIONS = {
     canViewPOS:true, canManagePOS:false,
     canViewReports:false, canViewAdmin:false,
     canManageUsers:false, canManageSettings:false, canManageWallets:false,
+    canDeleteInvoice:false,
   },
 };
 
@@ -41,7 +43,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    startNetworkMonitor(() => {});
+    startNetworkMonitor(()=>{});
     AsyncStorage.getItem('isp_user').then(stored => {
       if (stored) { try { setUser(JSON.parse(stored)); } catch(e) {} }
       setLoading(false);
@@ -50,35 +52,39 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = async (username, password) => {
-    try {
-      const r = await execSQL('SELECT * FROM users WHERE username=? AND is_active=1 LIMIT 1',[username]);
-      const local = r.rows._array[0];
-      if (local && local.password_hash === password) {
-        const userData = { id:local.id, name:local.name, username:local.username, role:local.role, phone:local.phone };
-        await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
-        setUser(userData);
-        if (isOnline()) initialSync();
-        return { success: true };
-      }
-    } catch(e) {}
+    if (!isOnline()) {
+      try {
+        const cached = await AsyncStorage.getItem('isp_user_cache');
+        if (cached) {
+          const users = JSON.parse(cached);
+          const u = users.find(x => x.username===username && x.password_hash===password);
+          if (u) {
+            const userData = {id:u.id,name:u.name,username:u.username,role:u.role,phone:u.phone};
+            await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
+            setUser(userData);
+            return { success: true };
+          }
+        }
+      } catch(e) {}
+      return { success:false, error:'لا إنترنت — سجّل دخولك مرة واحدة بالإنترنت أولاً' };
+    }
 
-    if (!isOnline()) return { success:false, error:'لا إنترنت — سجّل دخولك مرة واحدة بالإنترنت أولاً' };
-
-    const { data, error } = await supabase.from('users').select('*').eq('username',username).eq('is_active',true).single();
+    const { data, error } = await supabase
+      .from('users').select('*').eq('username',username).eq('is_active',true).single();
     if (error || !data) return { success:false, error:'اسم المستخدم غير موجود' };
     if (data.password_hash !== password) return { success:false, error:'كلمة المرور غير صحيحة' };
 
     try {
-      await execSQL(
-        `INSERT OR REPLACE INTO users (id,name,username,role,phone,is_active,password_hash,synced) VALUES (?,?,?,?,?,1,?,1)`,
-        [data.id,data.name,data.username,data.role,data.phone||'',data.password_hash]
-      );
+      const cached = await AsyncStorage.getItem('isp_user_cache');
+      const users = cached ? JSON.parse(cached) : [];
+      const idx = users.findIndex(u => u.id===data.id);
+      if (idx >= 0) users[idx] = data; else users.push(data);
+      await AsyncStorage.setItem('isp_user_cache', JSON.stringify(users));
     } catch(e) {}
 
-    const userData = { id:data.id, name:data.name, username:data.username, role:data.role, phone:data.phone };
+    const userData = {id:data.id,name:data.name,username:data.username,role:data.role,phone:data.phone};
     await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
     setUser(userData);
-    initialSync();
     return { success: true };
   };
 

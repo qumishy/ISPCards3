@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { isOnline, addSyncListener, syncAll } from '../services/SyncService';
+import { isOnline, addSyncListener, syncNow } from '../services/SyncService';
 import { getSyncQueueCount } from '../services/database';
 
 export function useSync() {
@@ -7,8 +7,8 @@ export function useSync() {
   const [pending, setPending] = useState(0);
   const [syncing, setSyncing] = useState(false);
 
-  const refresh = useCallback(() => {
-    try { setPending(getSyncQueueCount()); } catch(e) { setPending(0); }
+  const refresh = useCallback(async () => {
+    try { setPending(await getSyncQueueCount()); } catch(e) { setPending(0); }
     setOnline(isOnline());
   }, []);
 
@@ -21,8 +21,8 @@ export function useSync() {
   const manualSync = useCallback(async () => {
     if (!isOnline()) return;
     setSyncing(true);
-    await syncAll();
-    refresh();
+    await syncNow();
+    await refresh();
     setSyncing(false);
   }, [refresh]);
 

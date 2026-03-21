@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  Alert, KeyboardAvoidingView, Platform, TextInput,
+  Alert, KeyboardAvoidingView, Platform, ActivityIndicator,
 } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../theme';
 import {
   getLocalPOS, getLocalCategories, getLocalBatches, getLocalUsers,
   getAgentWallets, createLocalInvoice, addInvoiceItem,
   createLocalCollection, createAgentWallet, execSQL,
-  updatePOS, updateUser, updateCategory,
+  updatePOS, updateUser, updateCategory, softDeleteInvoice,
+  updateInvoiceDiscount,
 } from '../services/database';
 import { posService, inventoryService } from '../services/supabase';
 import { todayISO, GOVERNORATES, getDistricts, formatCurrency } from '../utils/helpers';
@@ -16,21 +17,24 @@ import { Input, Btn, Loading, Row, Badge } from '../components/UI';
 import { useAuth } from '../services/AuthContext';
 
 // ── Picker ────────────────────────────────────────
-function Picker({ label, options, value, onChange, placeholder }) {
+function Picker({ label, options, value, onChange, placeholder, loading: pLoading }) {
   const [open, setOpen] = useState(false);
   const selected = options.find(o => o.value === value);
   return (
     <View style={{ marginBottom: spacing.md }}>
       {label && <Text style={st.label}>{label}</Text>}
-      <TouchableOpacity style={st.picker} onPress={() => setOpen(!open)} activeOpacity={0.8}>
-        <Text style={[st.pickerTxt, !selected && { color: colors.t3 }]}>
-          {selected ? selected.label : placeholder || 'اختر...'}
-        </Text>
+      <TouchableOpacity style={st.picker} onPress={() => !pLoading && setOpen(!open)} activeOpacity={0.8}>
+        {pLoading
+          ? <ActivityIndicator size="small" color={colors.blue} style={{ flex: 1 }} />
+          : <Text style={[st.pickerTxt, !selected && { color: colors.t3 }]}>
+              {selected ? selected.label : placeholder || 'اختر...'}
+            </Text>
+        }
         <Text style={{ color: colors.t3 }}>{open ? '▲' : '▼'}</Text>
       </TouchableOpacity>
-      {open && (
+      {open && options.length > 0 && (
         <View style={st.dropdown}>
-          <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
+          <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled>
             {options.map(opt => (
               <TouchableOpacity key={String(opt.value)} style={[st.dropItem, value===opt.value&&st.dropItemAct]}
                 onPress={() => { onChange(opt.value); setOpen(false); }}>
@@ -38,6 +42,11 @@ function Picker({ label, options, value, onChange, placeholder }) {
               </TouchableOpacity>
             ))}
           </ScrollView>
+        </View>
+      )}
+      {open && options.length === 0 && (
+        <View style={[st.dropdown,{padding:spacing.md}]}>
+          <Text style={{color:colors.t3,textAlign:'center',fontSize:fontSize.sm}}>لا توجد خيارات متاحة</Text>
         </View>
       )}
     </View>
@@ -53,21 +62,21 @@ export function NewInvoiceScreen({ navigation }) {
   const [agents, setAgents] = useState([]);
   const [categories, setCategories] = useState([]);
   const [wallets, setWallets] = useState([]);
+  const [dataLoading, setDataLoading] = useState(true);
   const [form, setForm] = useState({
     pos_id: '', agent_id: user?.role==='agent'?user.id:'',
-    type: 'credit', invoice_date: todayISO(), notes: ''
+    type: 'credit', invoice_date: todayISO(), notes: '', discount: '0',
   });
-  const [items, setItems] = useState([]); // بنود الفاتورة
+  const [items, setItems] = useState([]);
   const [newItem, setNewItem] = useState({ category_id:'', wallet_id:'', unit_price:'', quantity:'' });
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [invoiceId, setInvoiceId] = useState(null); // بعد الحفظ الأولي
 
   useEffect(() => {
     async function load() {
       const agentId = user?.role==='agent' ? user.id : null;
       const [p, a, c, w] = await Promise.all([
-        getLocalPOS(), getLocalUsers('agent'),
+        getLocalPOS(),
+        getLocalUsers('agent'),
         getLocalCategories(),
         getAgentWallets(agentId),
       ]);
@@ -75,48 +84,42 @@ export function NewInvoiceScreen({ navigation }) {
       setAgents(a);
       setCategories(c);
       setWallets(w.filter(x=>x.remaining_cards>0));
-      setLoading(false);
+      setDataLoading(false);
     }
     load();
   }, [user]);
 
-  // عند اختيار الفئة — ملء السعر وتصفية المحافظ
   const onSelectCategory = (catId) => {
     const cat = categories.find(c=>c.id===catId);
     const catWallets = wallets.filter(w=>w.category_id===catId);
     setNewItem(f => ({
-      ...f,
-      category_id: catId,
+      ...f, category_id: catId,
       unit_price: String(cat?.price||''),
       wallet_id: catWallets.length===1 ? catWallets[0].id : '',
     }));
   };
 
-  const itemTotal = () => {
-    const qty = parseInt(newItem.quantity)||0;
-    const price = parseFloat(newItem.unit_price)||0;
-    return qty * price;
-  };
-
-  const grandTotal = () => items.reduce((s,i)=>s+(i.total||0), 0);
+  const itemTotal = () => (parseInt(newItem.quantity)||0) * (parseFloat(newItem.unit_price)||0);
+  const subtotal = () => items.reduce((s,i)=>s+i.total,0);
+  const discount = () => parseFloat(form.discount)||0;
+  const grandTotal = () => Math.max(0, subtotal() - discount());
 
   const addItem = () => {
     if (!newItem.category_id||!newItem.quantity||!newItem.unit_price) {
       Alert.alert('تنبيه','اختر الفئة وأدخل الكمية والسعر'); return;
     }
     const qty = parseInt(newItem.quantity)||0;
+    if (qty <= 0) { Alert.alert('خطأ','الكمية يجب أن تكون أكبر من صفر'); return; }
     const wallet = wallets.find(w=>w.id===newItem.wallet_id);
     if (wallet && qty > wallet.remaining_cards) {
       Alert.alert('خطأ',`المتاح في المحفظة: ${wallet.remaining_cards} ورقة فقط`); return;
     }
     const cat = categories.find(c=>c.id===newItem.category_id);
-    const total = itemTotal();
-    setItems(prev=>[...prev,{
-      ...newItem,
-      cat_name: cat?.name||'—',
+    setItems(prev=>[...prev, {
+      ...newItem, cat_name: cat?.name||'—',
       quantity: qty,
       unit_price: parseFloat(newItem.unit_price),
-      total,
+      total: itemTotal(),
       id: Date.now().toString(),
     }]);
     setNewItem({ category_id:'', wallet_id:'', unit_price:'', quantity:'' });
@@ -129,33 +132,30 @@ export function NewInvoiceScreen({ navigation }) {
     if (items.length===0) { Alert.alert('تنبيه','أضف بنداً واحداً على الأقل'); return; }
     setSaving(true);
     try {
-      const { id, invoice_number } = await createLocalInvoice(form);
+      const total = subtotal();
+      const disc = discount();
+      const { id, invoice_number } = await createLocalInvoice({ ...form, total_amount: total, discount: disc });
       for (const item of items) {
-        // نحسب from/to من المحفظة تلقائياً
         const wallet = wallets.find(w=>w.id===item.wallet_id);
-        const fromCard = wallet ? wallet.from_card + wallet.sold_cards : 1;
+        const usedCards = wallet ? (wallet.from_card + wallet.sold_cards - 1) : 0;
+        const fromCard = usedCards + 1;
         const toCard = fromCard + item.quantity - 1;
         await addInvoiceItem(id, {
           category_id: item.category_id,
           batch_id: wallet?.batch_id||'',
           wallet_id: item.wallet_id||'',
-          from_card: fromCard,
-          to_card: toCard,
-          unit_price: item.unit_price,
-          quantity: item.quantity,
+          from_card: fromCard, to_card: toCard,
+          unit_price: item.unit_price, quantity: item.quantity,
         });
       }
       setSaving(false);
       Alert.alert('✅ تم',`الفاتورة: ${invoice_number}\nالإجمالي: ${formatCurrency(grandTotal())}`,[
         {text:'موافق',onPress:()=>navigation.goBack()}
       ]);
-    } catch(e) {
-      setSaving(false);
-      Alert.alert('خطأ',e.message);
-    }
+    } catch(e) { setSaving(false); Alert.alert('خطأ',e.message); }
   };
 
-  if (loading) return <Loading />;
+  if (dataLoading) return <Loading />;
 
   const filteredWallets = wallets.filter(w=>w.category_id===newItem.category_id);
 
@@ -163,18 +163,22 @@ export function NewInvoiceScreen({ navigation }) {
     <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':undefined}>
       <ScrollView style={st.screen} contentContainerStyle={{padding:spacing.md,paddingBottom:100}}>
 
-        {/* ═══ رأس الفاتورة ═══ */}
+        {/* رأس الفاتورة */}
         <View style={st.invoiceHeader}>
-          <Text style={st.invoiceTitle}>فاتورة مبيعات</Text>
+          <Text style={st.invoiceTitle}>🧾 فاتورة مبيعات</Text>
           <Text style={st.invoiceDate}>{form.invoice_date}</Text>
         </View>
 
         <View style={st.invoiceBody}>
-          <Picker label="نقطة البيع *" options={pos.map(p=>({value:p.id,label:p.name}))}
-            value={form.pos_id} onChange={v=>setForm({...form,pos_id:v})} placeholder="اختر العميل..."/>
+          <Picker label="نقطة البيع *"
+            options={pos.map(p=>({value:p.id,label:p.name}))}
+            value={form.pos_id} onChange={v=>setForm({...form,pos_id:v})}
+            placeholder="اختر العميل..." loading={dataLoading}/>
           {user?.role!=='agent'&&(
-            <Picker label="المندوب *" options={agents.map(a=>({value:a.id,label:a.name}))}
-              value={form.agent_id} onChange={v=>setForm({...form,agent_id:v})}/>
+            <Picker label="المندوب *"
+              options={agents.map(a=>({value:a.id,label:a.name}))}
+              value={form.agent_id} onChange={v=>setForm({...form,agent_id:v})}
+              loading={dataLoading}/>
           )}
           <Row style={{gap:spacing.md}}>
             <View style={{flex:1}}>
@@ -191,47 +195,43 @@ export function NewInvoiceScreen({ navigation }) {
             onChangeText={v=>setForm({...form,notes:v})} placeholder="اختياري..." multiline/>
         </View>
 
-        {/* ═══ جدول البنود ═══ */}
+        {/* البنود */}
         <View style={st.itemsSection}>
           <Text style={st.sectionTitle}>📋 البنود</Text>
-
-          {/* رأس الجدول */}
           {items.length>0&&(
             <View style={st.tableHeader}>
               <Text style={[st.thCell,{flex:2}]}>الفئة</Text>
               <Text style={[st.thCell,{flex:1}]}>الكمية</Text>
               <Text style={[st.thCell,{flex:1}]}>السعر</Text>
               <Text style={[st.thCell,{flex:1}]}>الإجمالي</Text>
-              <Text style={[st.thCell,{width:30}]}> </Text>
+              <Text style={[st.thCell,{width:28}]}></Text>
             </View>
           )}
-
-          {/* البنود المضافة */}
           {items.map((item,i)=>(
             <View key={item.id} style={[st.tableRow,i%2===0&&{backgroundColor:colors.card2}]}>
-              <Text style={[st.tdCell,{flex:2,color:colors.cyan,fontWeight:'700'}]}>{item.cat_name}</Text>
+              <Text style={[st.tdCell,{flex:2,color:colors.cyan,fontWeight:'600'}]}>{item.cat_name}</Text>
               <Text style={[st.tdCell,{flex:1}]}>{item.quantity}</Text>
               <Text style={[st.tdCell,{flex:1}]}>{formatCurrency(item.unit_price)}</Text>
               <Text style={[st.tdCell,{flex:1,color:colors.green,fontWeight:'700'}]}>{formatCurrency(item.total)}</Text>
-              <TouchableOpacity style={{width:30,alignItems:'center'}} onPress={()=>removeItem(item.id)}>
-                <Text style={{color:colors.red,fontSize:16}}>✕</Text>
+              <TouchableOpacity style={{width:28,alignItems:'center'}} onPress={()=>removeItem(item.id)}>
+                <Text style={{color:colors.red,fontSize:15}}>✕</Text>
               </TouchableOpacity>
             </View>
           ))}
 
-          {/* إضافة بند جديد */}
+          {/* إضافة بند */}
           <View style={st.addItemBox}>
             <Text style={st.addItemTitle}>+ إضافة بند</Text>
             <Picker label="الفئة *"
               options={categories.map(c=>({value:c.id,label:`${c.name} — ${formatCurrency(c.price)}`}))}
-              value={newItem.category_id} onChange={onSelectCategory} placeholder="اختر الفئة..."/>
-
+              value={newItem.category_id} onChange={onSelectCategory}
+              placeholder={dataLoading?'جاري التحميل...':'اختر الفئة...'}
+              loading={dataLoading}/>
             {filteredWallets.length>0&&(
               <Picker label="المحفظة"
                 options={filteredWallets.map(w=>({value:w.id,label:`${w.batches?.batch_number||'—'} • متبقي: ${w.remaining_cards}`}))}
                 value={newItem.wallet_id} onChange={v=>setNewItem({...newItem,wallet_id:v})}/>
             )}
-
             <Row style={{gap:spacing.sm}}>
               <View style={{flex:1}}>
                 <Input label="عدد الأوراق *" value={newItem.quantity}
@@ -242,32 +242,40 @@ export function NewInvoiceScreen({ navigation }) {
                   onChangeText={v=>setNewItem({...newItem,unit_price:v})} keyboardType="numeric" placeholder="0"/>
               </View>
             </Row>
-
-            {/* معاينة */}
             {newItem.quantity&&newItem.unit_price&&itemTotal()>0&&(
               <View style={st.itemPreview}>
-                <Text style={{color:colors.t3}}>إجمالي البند</Text>
+                <Text style={{color:colors.t3,fontSize:fontSize.xs}}>إجمالي البند</Text>
                 <Text style={{color:colors.green,fontWeight:'800',fontSize:fontSize.xl}}>{formatCurrency(itemTotal())}</Text>
               </View>
             )}
-
             <Btn label="✅ إضافة البند" variant="success" size="sm" onPress={addItem}/>
           </View>
 
-          {/* الإجمالي العام */}
+          {/* المجاميع */}
           {items.length>0&&(
-            <View style={st.grandTotal}>
-              <Text style={st.grandTotalLabel}>الإجمالي العام للفاتورة</Text>
-              <Text style={st.grandTotalVal}>{formatCurrency(grandTotal())}</Text>
-              <Text style={st.grandTotalSub}>{items.length} بند • {items.reduce((s,i)=>s+i.quantity,0)} ورقة</Text>
+            <View style={st.totalsBox}>
+              <Row style={{justifyContent:'space-between',marginBottom:spacing.sm}}>
+                <Text style={{color:colors.t2,fontSize:fontSize.md}}>المجموع الفرعي</Text>
+                <Text style={{color:colors.t1,fontWeight:'700',fontSize:fontSize.lg}}>{formatCurrency(subtotal())}</Text>
+              </Row>
+              <Row style={{alignItems:'center',marginBottom:spacing.sm}}>
+                <Text style={{color:colors.t2,fontSize:fontSize.md,flex:1}}>الخصم (ر.ي)</Text>
+                <View style={{width:140}}>
+                  <Input value={form.discount} onChangeText={v=>setForm({...form,discount:v})}
+                    keyboardType="numeric" placeholder="0" style={{marginBottom:0}}/>
+                </View>
+              </Row>
+              <View style={st.grandTotalRow}>
+                <Text style={st.grandTotalLabel}>الإجمالي الصافي</Text>
+                <Text style={st.grandTotalVal}>{formatCurrency(grandTotal())}</Text>
+              </View>
             </View>
           )}
         </View>
 
-        {/* أزرار الحفظ */}
         <Row style={st.actions}>
           <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={()=>navigation.goBack()}/>
-          <Btn label={saving?'جاري الحفظ...':'💾 حفظ الفاتورة'} variant="primary" style={{flex:1}}
+          <Btn label={saving?'جاري الحفظ...':'💾 حفظ الفاتورة'} variant="primary" style={{flex:2}}
             onPress={save} disabled={saving||items.length===0}/>
         </Row>
       </ScrollView>
@@ -280,6 +288,7 @@ export function NewInvoiceScreen({ navigation }) {
 // ══════════════════════════════════════════════════
 export function InvoiceDetailScreen({ route, navigation }) {
   const { id } = route.params;
+  const { can } = useAuth();
   const [invoice, setInvoice] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -291,18 +300,28 @@ export function InvoiceDetailScreen({ route, navigation }) {
         FROM invoices i
         LEFT JOIN pos_customers p ON i.pos_id=p.id
         LEFT JOIN users u ON i.agent_id=u.id
-        WHERE i.id=?`,[id]);
+        WHERE i.id=? AND i.active=1`,[id]);
       const itR = await execSQL(`
         SELECT ii.*, c.name as cat_name
         FROM invoice_items ii
         LEFT JOIN card_categories c ON ii.category_id=c.id
-        WHERE ii.invoice_id=?`,[id]);
+        WHERE ii.invoice_id=? AND ii.active=1`,[id]);
       setInvoice(r.rows._array[0]);
       setItems(itR.rows._array||[]);
       setLoading(false);
     }
     load();
   },[id]);
+
+  const handleDelete = () => {
+    Alert.alert('حذف الفاتورة','هل تريد حذف هذه الفاتورة؟ لا يمكن التراجع.',[
+      {text:'إلغاء',style:'cancel'},
+      {text:'حذف',style:'destructive',onPress:async()=>{
+        await softDeleteInvoice(id);
+        navigation.goBack();
+      }},
+    ]);
+  };
 
   if (loading) return <Loading />;
   if (!invoice) return <View style={{flex:1,backgroundColor:colors.bg,alignItems:'center',justifyContent:'center'}}><Text style={{color:colors.t3}}>الفاتورة غير موجودة</Text></View>;
@@ -313,20 +332,17 @@ export function InvoiceDetailScreen({ route, navigation }) {
         <Text style={st.invoiceTitle}>{invoice.invoice_number}</Text>
         <Badge status={invoice.status}/>
       </View>
-
       <View style={st.invoiceBody}>
-        <Row style={{justifyContent:'space-between',paddingVertical:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.border}}>
-          <Text style={{color:colors.t3}}>نقطة البيع</Text>
-          <Text style={{color:colors.t1,fontWeight:'700'}}>{invoice.pos_name||'—'}</Text>
-        </Row>
-        <Row style={{justifyContent:'space-between',paddingVertical:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.border}}>
-          <Text style={{color:colors.t3}}>المندوب</Text>
-          <Text style={{color:colors.t1,fontWeight:'700'}}>{invoice.agent_name||'—'}</Text>
-        </Row>
-        <Row style={{justifyContent:'space-between',paddingVertical:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.border}}>
-          <Text style={{color:colors.t3}}>التاريخ</Text>
-          <Text style={{color:colors.t1}}>{invoice.invoice_date||'—'}</Text>
-        </Row>
+        {[
+          {l:'نقطة البيع',v:invoice.pos_name||'—'},
+          {l:'المندوب',v:invoice.agent_name||'—'},
+          {l:'التاريخ',v:invoice.invoice_date||'—'},
+        ].map((item,i)=>(
+          <Row key={i} style={{justifyContent:'space-between',paddingVertical:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.border}}>
+            <Text style={{color:colors.t3}}>{item.l}</Text>
+            <Text style={{color:colors.t1,fontWeight:'700'}}>{item.v}</Text>
+          </Row>
+        ))}
         <Row style={{justifyContent:'space-between',paddingVertical:spacing.sm}}>
           <Text style={{color:colors.t3}}>النوع</Text>
           <Badge status={invoice.type}/>
@@ -354,23 +370,42 @@ export function InvoiceDetailScreen({ route, navigation }) {
             ))}
           </>)
         }
-        <View style={st.grandTotal}>
-          <Text style={st.grandTotalLabel}>الإجمالي العام</Text>
-          <Text style={st.grandTotalVal}>{formatCurrency(invoice.total_amount)}</Text>
+        <View style={st.totalsBox}>
+          <Row style={{justifyContent:'space-between',marginBottom:spacing.xs}}>
+            <Text style={{color:colors.t3}}>المجموع الفرعي</Text>
+            <Text style={{color:colors.t1,fontWeight:'700'}}>{formatCurrency(invoice.total_amount)}</Text>
+          </Row>
+          {(invoice.discount>0)&&(
+            <Row style={{justifyContent:'space-between',marginBottom:spacing.xs}}>
+              <Text style={{color:colors.t3}}>الخصم</Text>
+              <Text style={{color:colors.orange,fontWeight:'700'}}>- {formatCurrency(invoice.discount)}</Text>
+            </Row>
+          )}
+          <View style={st.grandTotalRow}>
+            <Text style={st.grandTotalLabel}>الإجمالي الصافي</Text>
+            <Text style={st.grandTotalVal}>{formatCurrency(invoice.net_amount||invoice.total_amount)}</Text>
+          </View>
         </View>
       </View>
+
+      {/* حذف الفاتورة — للمدير فقط والمعلقة فقط */}
+      {can('canViewAdmin')&&invoice.status==='pending'&&(
+        <Btn label="🗑️ حذف الفاتورة" variant="danger" onPress={handleDelete} style={{marginTop:spacing.sm}}/>
+      )}
     </ScrollView>
   );
 }
 
 // ══════════════════════════════════════════════════
-// إشعار قبض
+// إشعار قبض — مع قيد مبلغ الفاتورة
 // ══════════════════════════════════════════════════
 export function NewCollectionScreen({ navigation }) {
   const { user } = useAuth();
   const [agents, setAgents] = useState([]);
   const [pos, setPos] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [dataLoading, setDataLoading] = useState(true);
   const [form, setForm] = useState({
     agent_id: user?.role==='agent'?user.id:'',
     pos_id:'', invoice_id:'', amount:'',
@@ -382,18 +417,40 @@ export function NewCollectionScreen({ navigation }) {
     async function load(){
       const [a,p,inv]=await Promise.all([
         getLocalUsers('agent'), getLocalPOS(),
-        execSQL("SELECT id,invoice_number,total_amount FROM invoices WHERE status!='paid' ORDER BY created_at DESC"),
+        execSQL("SELECT id,invoice_number,total_amount,net_amount,paid_amount FROM invoices WHERE active=1 AND status!='paid' ORDER BY created_at DESC"),
       ]);
       setAgents(a); setPos(p);
       setInvoices(inv.rows._array||[]);
+      setDataLoading(false);
     }
     load();
   },[]);
 
+  const onSelectInvoice = (invId) => {
+    const inv = invoices.find(i=>i.id===invId);
+    setSelectedInvoice(inv||null);
+    setForm(f=>({...f, invoice_id:invId}));
+    // تعبئة تلقائية للمبلغ
+    if (inv) {
+      const remaining = (inv.net_amount||inv.total_amount) - (inv.paid_amount||0);
+      setForm(f=>({...f, invoice_id:invId, amount:String(Math.max(0,remaining))}));
+    }
+  };
+
   const save=async()=>{
     if(!form.agent_id||!form.pos_id||!form.amount){Alert.alert('تنبيه','يرجى إكمال البيانات');return;}
+    const amt = parseFloat(form.amount)||0;
+    if (amt <= 0) { Alert.alert('خطأ','المبلغ يجب أن يكون أكبر من صفر'); return; }
+    // تحقق من قيد الفاتورة
+    if (selectedInvoice) {
+      const maxAmount = (selectedInvoice.net_amount||selectedInvoice.total_amount) - (selectedInvoice.paid_amount||0);
+      if (amt > maxAmount) {
+        Alert.alert('خطأ',`المبلغ يتجاوز المستحق\nأقصى مبلغ: ${formatCurrency(maxAmount)}`);
+        return;
+      }
+    }
     setSaving(true);
-    const {collection_number}=await createLocalCollection({...form,amount:parseFloat(form.amount)});
+    const {collection_number}=await createLocalCollection({...form,amount:amt});
     setSaving(false);
     Alert.alert('✅ تم',`تم رفع الإشعار: ${collection_number}`,[{text:'موافق',onPress:()=>navigation.goBack()}]);
   };
@@ -403,15 +460,38 @@ export function NewCollectionScreen({ navigation }) {
       <ScrollView style={st.screen} contentContainerStyle={{padding:spacing.lg,paddingBottom:100}}>
         {user?.role!=='agent'&&(
           <Picker label="المندوب *" options={agents.map(a=>({value:a.id,label:a.name}))}
-            value={form.agent_id} onChange={v=>setForm({...form,agent_id:v})}/>
+            value={form.agent_id} onChange={v=>setForm({...form,agent_id:v})} loading={dataLoading}/>
         )}
         <Picker label="نقطة البيع *" options={pos.map(p=>({value:p.id,label:p.name}))}
-          value={form.pos_id} onChange={v=>setForm({...form,pos_id:v})}/>
+          value={form.pos_id} onChange={v=>setForm({...form,pos_id:v})} loading={dataLoading}/>
+
+        {/* اختيار الفاتورة مع عرض قيمتها */}
         <Picker label="الفاتورة المرتبطة"
-          options={[{value:'',label:'— بدون فاتورة —'},...invoices.map(i=>({value:i.id,label:`${i.invoice_number} — ${formatCurrency(i.total_amount)}`}))]}
-          value={form.invoice_id} onChange={v=>setForm({...form,invoice_id:v})}/>
+          options={[{value:'',label:'— بدون فاتورة —'},...invoices.map(i=>({
+            value:i.id,
+            label:`${i.invoice_number} — ${formatCurrency(i.net_amount||i.total_amount)}`
+          }))]}
+          value={form.invoice_id} onChange={onSelectInvoice} loading={dataLoading}/>
+
+        {/* عرض تفاصيل الفاتورة المختارة */}
+        {selectedInvoice&&(
+          <View style={st.invoiceInfo}>
+            <Row style={{justifyContent:'space-between',marginBottom:spacing.xs}}>
+              <Text style={{color:colors.t3,fontSize:fontSize.sm}}>إجمالي الفاتورة</Text>
+              <Text style={{color:colors.t1,fontWeight:'700'}}>{formatCurrency(selectedInvoice.net_amount||selectedInvoice.total_amount)}</Text>
+            </Row>
+            <Row style={{justifyContent:'space-between'}}>
+              <Text style={{color:colors.t3,fontSize:fontSize.sm}}>المستحق</Text>
+              <Text style={{color:colors.orange,fontWeight:'800',fontSize:fontSize.lg}}>
+                {formatCurrency((selectedInvoice.net_amount||selectedInvoice.total_amount)-(selectedInvoice.paid_amount||0))}
+              </Text>
+            </Row>
+          </View>
+        )}
+
         <Input label="المبلغ (ر.ي) *" value={form.amount}
           onChangeText={v=>setForm({...form,amount:v})} keyboardType="numeric" placeholder="0"/>
+
         <Picker label="طريقة القبض"
           options={[{value:'cash',label:'نقدي'},{value:'transfer',label:'تحويل بنكي'},{value:'check',label:'شيك'}]}
           value={form.method} onChange={v=>setForm({...form,method:v})}/>
@@ -423,7 +503,7 @@ export function NewCollectionScreen({ navigation }) {
           onChangeText={v=>setForm({...form,collection_date:v})} placeholder="YYYY-MM-DD"/>
         <Row style={st.actions}>
           <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={()=>navigation.goBack()}/>
-          <Btn label={saving?'جاري الرفع...':'💾 رفع الإشعار'} variant="primary" style={{flex:1}} onPress={save} disabled={saving}/>
+          <Btn label={saving?'جاري الرفع...':'💾 رفع الإشعار'} variant="primary" style={{flex:2}} onPress={save} disabled={saving}/>
         </Row>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -431,13 +511,14 @@ export function NewCollectionScreen({ navigation }) {
 }
 
 // ══════════════════════════════════════════════════
-// توزيع أوراق — بدون حقول الأرقام، باختيار الفئة
+// توزيع أوراق — بالفئة بدون أرقام يدوية
 // ══════════════════════════════════════════════════
 export function AssignWalletScreen({ navigation }) {
   const { user } = useAuth();
   const [agents, setAgents] = useState([]);
   const [batches, setBatches] = useState([]);
   const [cats, setCats] = useState([]);
+  const [dataLoading, setDataLoading] = useState(true);
   const [form, setForm] = useState({ agent_id:'', category_id:'', batch_id:'', quantity:'', notes:'' });
   const [batchInfo, setBatchInfo] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -448,6 +529,7 @@ export function AssignWalletScreen({ navigation }) {
         setAgents(a);
         setBatches(b.filter(x=>x.available_cards>0));
         setCats(c);
+        setDataLoading(false);
       });
   },[]);
 
@@ -459,8 +541,7 @@ export function AssignWalletScreen({ navigation }) {
   };
 
   const onSelectBatch = (batchId) => {
-    const batch = batches.find(b=>b.id===batchId);
-    setBatchInfo(batch||null);
+    setBatchInfo(batches.find(b=>b.id===batchId)||null);
     setForm(f=>({...f, batch_id:batchId}));
   };
 
@@ -474,7 +555,6 @@ export function AssignWalletScreen({ navigation }) {
     if (!batchInfo||qty>batchInfo.available_cards) {
       Alert.alert('خطأ',`المتاح في الدفعة: ${batchInfo?.available_cards||0} ورقة`); return;
     }
-    // تخصيص الأوراق من بداية المتاح
     const usedCards = (batchInfo.total_cards||39) - (batchInfo.available_cards||0);
     const fromCard = usedCards + 1;
     const toCard = fromCard + qty - 1;
@@ -496,44 +576,49 @@ export function AssignWalletScreen({ navigation }) {
     <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':undefined}>
       <ScrollView style={st.screen} contentContainerStyle={{padding:spacing.lg,paddingBottom:100}}>
         <Picker label="المندوب *" options={agents.map(a=>({value:a.id,label:a.name}))}
-          value={form.agent_id} onChange={v=>setForm({...form,agent_id:v})}/>
+          value={form.agent_id} onChange={v=>setForm({...form,agent_id:v})} loading={dataLoading}/>
+
         <Picker label="الفئة *"
           options={cats.map(c=>({value:c.id,label:`${c.name} — ${formatCurrency(c.price)}`}))}
-          value={form.category_id} onChange={onSelectCategory} placeholder="اختر فئة الكرت..."/>
+          value={form.category_id} onChange={onSelectCategory}
+          placeholder={dataLoading?'جاري التحميل...':'اختر فئة الكرت...'}
+          loading={dataLoading}/>
+
         {filteredBatches.length>0&&(
           <Picker label="الدفعة *"
             options={filteredBatches.map(b=>({value:b.id,label:`${b.batch_number} • متاح: ${b.available_cards}`}))}
             value={form.batch_id} onChange={onSelectBatch}/>
         )}
+
         {batchInfo&&(
-          <View style={st.infoBox}>
-            <Text style={st.infoTitle}>معلومات الدفعة</Text>
-            <Row style={{justifyContent:'space-between',marginTop:spacing.sm}}>
-              <Text style={{color:colors.t3}}>الرقم التسلسلي</Text>
+          <View style={st.invoiceInfo}>
+            <Row style={{justifyContent:'space-between',marginBottom:spacing.xs}}>
+              <Text style={{color:colors.t3,fontSize:fontSize.sm}}>الرقم التسلسلي</Text>
               <Text style={{color:colors.cyan,fontWeight:'700'}}>{batchInfo.serial_number}</Text>
             </Row>
-            <Row style={{justifyContent:'space-between',marginTop:spacing.xs}}>
-              <Text style={{color:colors.t3}}>الأوراق المتاحة للتوزيع</Text>
-              <Text style={{color:colors.green,fontWeight:'700'}}>{batchInfo.available_cards} ورقة</Text>
+            <Row style={{justifyContent:'space-between'}}>
+              <Text style={{color:colors.t3,fontSize:fontSize.sm}}>المتاح للتوزيع</Text>
+              <Text style={{color:colors.green,fontWeight:'800',fontSize:fontSize.lg}}>{batchInfo.available_cards} ورقة</Text>
             </Row>
           </View>
         )}
+
         <Input label="عدد الأوراق *" value={form.quantity}
           onChangeText={v=>setForm({...form,quantity:v})} keyboardType="numeric"
-          placeholder={`من 1 إلى ${batchInfo?.available_cards||0}`}/>
+          placeholder={batchInfo?`من 1 إلى ${batchInfo.available_cards}`:'أدخل العدد'}/>
+
         {form.quantity&&batchInfo&&parseInt(form.quantity)>0&&(
-          <View style={st.preview}>
-            <Row style={{justifyContent:'space-between'}}>
-              <Text style={{color:colors.t3}}>سيتم التوزيع</Text>
-              <Text style={{color:colors.green,fontWeight:'800',fontSize:fontSize.xl}}>{parseInt(form.quantity)} ورقة</Text>
-            </Row>
+          <View style={st.itemPreview}>
+            <Text style={{color:colors.t3,fontSize:fontSize.xs}}>سيتم توزيع</Text>
+            <Text style={{color:colors.green,fontWeight:'800',fontSize:fontSize.xl}}>{parseInt(form.quantity)} ورقة</Text>
           </View>
         )}
+
         <Input label="ملاحظات" value={form.notes}
           onChangeText={v=>setForm({...form,notes:v})} placeholder="اختياري..." multiline/>
         <Row style={st.actions}>
           <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={()=>navigation.goBack()}/>
-          <Btn label={saving?'جاري التوزيع...':'✅ توزيع الأوراق'} variant="primary" style={{flex:1}} onPress={save} disabled={saving}/>
+          <Btn label={saving?'جاري التوزيع...':'✅ توزيع الأوراق'} variant="primary" style={{flex:2}} onPress={save} disabled={saving}/>
         </Row>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -541,13 +626,14 @@ export function AssignWalletScreen({ navigation }) {
 }
 
 // ══════════════════════════════════════════════════
-// إضافة دفعة + نقطة بيع جديدة + تعديل نقطة بيع
+// باقي النماذج
 // ══════════════════════════════════════════════════
 export function AddBatchScreen({ navigation }) {
   const [cats,setCats]=useState([]);
+  const [dataLoading,setDataLoading]=useState(true);
   const [form,setForm]=useState({category_id:'',serial_number:'',total_cards:'39',received_date:todayISO()});
   const [saving,setSaving]=useState(false);
-  useEffect(()=>{getLocalCategories().then(setCats);},[]);
+  useEffect(()=>{getLocalCategories().then(c=>{setCats(c);setDataLoading(false);});},[]);
   const save=async()=>{
     if(!form.category_id||!form.serial_number){Alert.alert('تنبيه','اختر الفئة وأدخل الرقم التسلسلي');return;}
     setSaving(true);
@@ -563,23 +649,22 @@ export function AddBatchScreen({ navigation }) {
   return (
     <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':undefined}>
       <ScrollView style={st.screen} contentContainerStyle={{padding:spacing.lg,paddingBottom:100}}>
-        <Picker label="فئة الكرت *" options={cats.map(c=>({value:c.id,label:`${c.name} — ${formatCurrency(c.price)}`}))}
-          value={form.category_id} onChange={v=>setForm({...form,category_id:v})}/>
-        <Input label="الرقم التسلسلي *" value={form.serial_number}
-          onChangeText={v=>setForm({...form,serial_number:v})} placeholder="مثال: 2444"/>
-        <Input label="عدد الأوراق" value={form.total_cards}
-          onChangeText={v=>setForm({...form,total_cards:v})} keyboardType="numeric"/>
-        <Input label="تاريخ الوصول" value={form.received_date}
-          onChangeText={v=>setForm({...form,received_date:v})} placeholder="YYYY-MM-DD"/>
+        <Picker label="فئة الكرت *"
+          options={cats.map(c=>({value:c.id,label:`${c.name} — ${formatCurrency(c.price)}`}))}
+          value={form.category_id} onChange={v=>setForm({...form,category_id:v})}
+          loading={dataLoading} placeholder="اختر الفئة..."/>
+        <Input label="الرقم التسلسلي *" value={form.serial_number} onChangeText={v=>setForm({...form,serial_number:v})} placeholder="مثال: 2444"/>
+        <Input label="عدد الأوراق" value={form.total_cards} onChangeText={v=>setForm({...form,total_cards:v})} keyboardType="numeric"/>
+        <Input label="تاريخ الوصول" value={form.received_date} onChangeText={v=>setForm({...form,received_date:v})} placeholder="YYYY-MM-DD"/>
         {form.serial_number&&(
-          <View style={st.preview}>
+          <View style={st.itemPreview}>
             <Text style={{color:colors.t3,fontSize:fontSize.xs,marginBottom:4}}>معاينة الترقيم</Text>
             <Text style={{color:colors.cyan,fontWeight:'700',textAlign:'center'}}>1-{form.serial_number} → {form.total_cards}-{form.serial_number}</Text>
           </View>
         )}
         <Row style={st.actions}>
           <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={()=>navigation.goBack()}/>
-          <Btn label={saving?'...':'✅ حفظ الدفعة'} variant="success" style={{flex:1}} onPress={save} disabled={saving}/>
+          <Btn label={saving?'...':'✅ حفظ الدفعة'} variant="success" style={{flex:2}} onPress={save} disabled={saving}/>
         </Row>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -607,19 +692,14 @@ export function NewPOSScreen({ navigation }) {
         <Input label="اسم المحل *" value={form.name} onChangeText={v=>setForm({...form,name:v})} placeholder="..."/>
         <Input label="اسم المالك" value={form.owner_name} onChangeText={v=>setForm({...form,owner_name:v})} placeholder="..."/>
         <Input label="رقم الجوال" value={form.phone} onChangeText={v=>setForm({...form,phone:v})} keyboardType="phone-pad"/>
-        <Picker label="المحافظة *" options={GOVERNORATES.map(g=>({value:g,label:g}))}
-          value={form.governorate} onChange={v=>setForm({...form,governorate:v,district:'',area:''})}/>
-        {districts.length>0&&<Picker label="المديرية"
-          options={[{value:'',label:'— اختر —'},...districts.map(d=>({value:d,label:d}))]}
-          value={form.district} onChange={v=>setForm({...form,district:v})}/>}
+        <Picker label="المحافظة *" options={GOVERNORATES.map(g=>({value:g,label:g}))} value={form.governorate} onChange={v=>setForm({...form,governorate:v,district:'',area:''})}/>
+        {districts.length>0&&<Picker label="المديرية" options={[{value:'',label:'— اختر —'},...districts.map(d=>({value:d,label:d}))]} value={form.district} onChange={v=>setForm({...form,district:v})}/>}
         <Input label="العزلة / الحارة" value={form.area} onChangeText={v=>setForm({...form,area:v})} placeholder="اختياري"/>
         <Input label="الحد الائتماني (ر.ي)" value={form.credit_limit} onChangeText={v=>setForm({...form,credit_limit:v})} keyboardType="numeric"/>
-        <Picker label="المندوب المسؤول"
-          options={[{value:'',label:'— بدون —'},...agents.map(a=>({value:a.id,label:a.name}))]}
-          value={form.assigned_agent_id} onChange={v=>setForm({...form,assigned_agent_id:v})}/>
+        <Picker label="المندوب المسؤول" options={[{value:'',label:'— بدون —'},...agents.map(a=>({value:a.id,label:a.name}))]} value={form.assigned_agent_id} onChange={v=>setForm({...form,assigned_agent_id:v})}/>
         <Row style={st.actions}>
           <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={()=>navigation.goBack()}/>
-          <Btn label={saving?'...':'✅ إضافة'} variant="primary" style={{flex:1}} onPress={save} disabled={saving}/>
+          <Btn label={saving?'...':'✅ إضافة'} variant="primary" style={{flex:2}} onPress={save} disabled={saving}/>
         </Row>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -641,13 +721,13 @@ export function EditPOSScreen({ route, navigation }) {
     load();
   },[id]);
   const save=async()=>{
-    if(!form.name){Alert.alert('تنبيه','الاسم مطلوب');return;}
+    if(!form?.name){Alert.alert('تنبيه','الاسم مطلوب');return;}
     setSaving(true);
     await updatePOS(id,{name:form.name,owner_name:form.owner_name,phone:form.phone,city:form.city,credit_limit:parseFloat(form.credit_limit)||500000,assigned_agent_id:form.assigned_agent_id||null});
     setSaving(false);
     Alert.alert('✅ تم','تم التعديل',[{text:'موافق',onPress:()=>navigation.goBack()}]);
   };
-  if(!form) return <Loading />;
+  if(!form) return <Loading/>;
   return (
     <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==='ios'?'padding':undefined}>
       <ScrollView style={st.screen} contentContainerStyle={{padding:spacing.lg,paddingBottom:100}}>
@@ -656,33 +736,25 @@ export function EditPOSScreen({ route, navigation }) {
         <Input label="رقم الجوال" value={form.phone} onChangeText={v=>setForm({...form,phone:v})} keyboardType="phone-pad"/>
         <Input label="المدينة / المنطقة" value={form.city} onChangeText={v=>setForm({...form,city:v})}/>
         <Input label="الحد الائتماني (ر.ي)" value={form.credit_limit} onChangeText={v=>setForm({...form,credit_limit:v})} keyboardType="numeric"/>
-        <Picker label="المندوب المسؤول"
-          options={[{value:'',label:'— بدون —'},...agents.map(a=>({value:a.id,label:a.name}))]}
-          value={form.assigned_agent_id} onChange={v=>setForm({...form,assigned_agent_id:v})}/>
+        <Picker label="المندوب المسؤول" options={[{value:'',label:'— بدون —'},...agents.map(a=>({value:a.id,label:a.name}))]} value={form.assigned_agent_id} onChange={v=>setForm({...form,assigned_agent_id:v})}/>
         <Row style={st.actions}>
           <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={()=>navigation.goBack()}/>
-          <Btn label={saving?'...':'💾 حفظ التعديل'} variant="primary" style={{flex:1}} onPress={save} disabled={saving}/>
+          <Btn label={saving?'...':'💾 حفظ التعديل'} variant="primary" style={{flex:2}} onPress={save} disabled={saving}/>
         </Row>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-// Styles
 const st = StyleSheet.create({
   screen:{flex:1,backgroundColor:colors.bg},
   label:{fontSize:fontSize.sm,fontWeight:'700',color:colors.t2,marginBottom:5},
   picker:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',backgroundColor:colors.bg,borderWidth:1,borderColor:colors.border2,borderRadius:radius.sm,padding:spacing.md,marginBottom:spacing.md},
   pickerTxt:{fontSize:fontSize.md,color:colors.t1,flex:1,marginLeft:8},
-  dropdown:{backgroundColor:colors.card2,borderWidth:1,borderColor:colors.border2,borderRadius:radius.sm,marginTop:-spacing.md,marginBottom:spacing.md,zIndex:100},
+  dropdown:{backgroundColor:colors.card2,borderWidth:1,borderColor:colors.border2,borderRadius:radius.sm,marginTop:-spacing.md,marginBottom:spacing.md,zIndex:999,elevation:5},
   dropItem:{padding:spacing.md,borderBottomWidth:1,borderBottomColor:colors.border},
   dropItemAct:{backgroundColor:colors.blue+'11'},
   dropTxt:{fontSize:fontSize.md,color:colors.t1},
-  infoBox:{backgroundColor:colors.bg2,borderRadius:radius.sm,padding:spacing.md,marginBottom:spacing.md,borderWidth:1,borderColor:colors.border2},
-  infoTitle:{fontSize:fontSize.sm,fontWeight:'700',color:colors.t2},
-  preview:{backgroundColor:colors.bg2,borderRadius:radius.sm,padding:spacing.md,marginBottom:spacing.md,borderWidth:1,borderColor:colors.blue+'44'},
-  actions:{flexDirection:'row',gap:spacing.md,marginTop:spacing.sm},
-  // فاتورة
   invoiceHeader:{backgroundColor:colors.card2,borderTopWidth:3,borderTopColor:colors.blue,borderRadius:radius.md,padding:spacing.lg,marginBottom:spacing.sm,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},
   invoiceTitle:{fontSize:fontSize.xxl,fontWeight:'800',color:colors.t1},
   invoiceDate:{fontSize:fontSize.sm,color:colors.t3},
@@ -691,13 +763,15 @@ const st = StyleSheet.create({
   sectionTitle:{fontSize:fontSize.lg,fontWeight:'700',color:colors.t1,marginBottom:spacing.md},
   tableHeader:{flexDirection:'row',backgroundColor:colors.bg2,padding:spacing.sm,borderRadius:radius.sm,marginBottom:spacing.xs},
   thCell:{fontSize:fontSize.xs,fontWeight:'700',color:colors.t3,textAlign:'center'},
-  tableRow:{flexDirection:'row',paddingVertical:spacing.sm,paddingHorizontal:spacing.xs,borderRadius:radius.xs,marginBottom:2},
+  tableRow:{flexDirection:'row',paddingVertical:spacing.sm,paddingHorizontal:spacing.xs,borderRadius:4,marginBottom:2},
   tdCell:{fontSize:fontSize.sm,color:colors.t1,textAlign:'center'},
   addItemBox:{backgroundColor:colors.bg2,borderRadius:radius.sm,padding:spacing.md,marginTop:spacing.md,borderWidth:1,borderColor:colors.border2,borderStyle:'dashed'},
   addItemTitle:{fontSize:fontSize.md,fontWeight:'700',color:colors.blue,marginBottom:spacing.md},
-  itemPreview:{flexDirection:'row',justifyContent:'space-between',backgroundColor:colors.bg,borderRadius:radius.sm,padding:spacing.sm,marginBottom:spacing.sm},
-  grandTotal:{backgroundColor:colors.blue+'11',borderWidth:1,borderColor:colors.blue+'44',borderRadius:radius.md,padding:spacing.lg,marginTop:spacing.md,alignItems:'center'},
-  grandTotalLabel:{fontSize:fontSize.sm,color:colors.t3,marginBottom:spacing.xs},
-  grandTotalVal:{fontSize:28,fontWeight:'800',color:colors.green},
-  grandTotalSub:{fontSize:fontSize.xs,color:colors.t3,marginTop:spacing.xs},
+  itemPreview:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',backgroundColor:colors.bg,borderRadius:radius.sm,padding:spacing.sm,marginBottom:spacing.sm},
+  totalsBox:{marginTop:spacing.md,backgroundColor:colors.bg2,borderRadius:radius.md,padding:spacing.md},
+  grandTotalRow:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',paddingTop:spacing.sm,marginTop:spacing.sm,borderTopWidth:1,borderTopColor:colors.border2},
+  grandTotalLabel:{fontSize:fontSize.lg,fontWeight:'700',color:colors.t1},
+  grandTotalVal:{fontSize:24,fontWeight:'800',color:colors.green},
+  invoiceInfo:{backgroundColor:colors.blue+'11',borderRadius:radius.sm,padding:spacing.md,marginBottom:spacing.md,borderWidth:1,borderColor:colors.blue+'33'},
+  actions:{flexDirection:'row',gap:spacing.md,marginTop:spacing.sm},
 });
