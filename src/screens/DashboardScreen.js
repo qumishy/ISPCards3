@@ -5,7 +5,7 @@ import {
   getLocalPOS, getLocalInvoices, getLocalCollections,
   getLocalBatches, getLocalCategories, getAgentWallets,
 } from '../services/database';
-import { formatCurrency, formatNumber, creditPercent, creditColor } from '../utils/helpers';
+import { formatCurrency, formatNumber, creditPercent, creditColor, formatDateShort } from '../utils/helpers';
 import { Card, CardHeader, Badge, Btn, Loading, ProgressBar, Row, KpiCard } from '../components/UI';
 import SyncBar from '../components/SyncBar';
 import { useAuth } from '../services/AuthContext';
@@ -23,7 +23,7 @@ export default function DashboardScreen({ navigation }) {
       getLocalCollections({ status:'pending' }),
       getLocalBatches(),
       getLocalCategories(),
-      getAgentWallets(user?.role === 'agent' ? user.id : null),
+      getAgentWallets(user?.role==='agent' ? user.id : null),
     ]);
     setData({ pos, invoices:inv, collections:col, batches:bat, categories:cat, wallets:wal });
     setLoading(false); setRefreshing(false);
@@ -35,81 +35,52 @@ export default function DashboardScreen({ navigation }) {
   const blockedPos = data.pos.filter(p => p.is_blocked==1).length;
   const totalInventory = data.batches.reduce((s,b) => s+(b.available_cards||0), 0);
   const pendingInv = data.invoices.filter(i => i.status==='pending').length;
-  const catColors = [colors.blue, colors.cyan, colors.purple, colors.green];
-
-  // إجماليات المحافظ
-  const walletSummary = data.categories.map((cat,i) => ({
-    ...cat, color: catColors[i%catColors.length],
-    total: data.wallets.filter(w=>w.category_id===cat.id).reduce((s,w)=>s+(w.total_cards||0),0),
-    remaining: data.wallets.filter(w=>w.category_id===cat.id).reduce((s,w)=>s+(w.remaining_cards||0),0),
-    sold: data.wallets.filter(w=>w.category_id===cat.id).reduce((s,w)=>s+(w.sold_cards||0),0),
-  }));
-
-  const catSummary = data.categories.map((cat,i) => ({
-    ...cat, color: catColors[i%catColors.length],
-    total: data.batches.filter(b=>b.category_id===cat.id).reduce((s,b)=>s+(b.available_cards||0),0),
-  }));
+  const overdueInv = data.invoices.filter(i => i.status==='overdue').length;
+  const totalSales = data.invoices.reduce((s,i) => s+(i.total_amount||0), 0);
+  const totalCollected = data.invoices.filter(i=>i.status==='paid').reduce((s,i)=>s+(i.total_amount||0),0);
 
   if (loading) return <Loading />;
 
   return (
     <View style={{ flex:1, backgroundColor:colors.bg }}>
       <SyncBar />
-      <ScrollView contentContainerStyle={{ padding:spacing.lg, paddingBottom:90 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}>
-
-        {/* KPIs */}
+      <ScrollView
+        contentContainerStyle={{ padding:spacing.lg, paddingBottom:90 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}
+      >
+        {/* KPIs الرئيسية */}
         <Row style={{ gap:spacing.sm, marginBottom:spacing.sm }}>
-          <KpiCard value={formatNumber(totalCredit)} label="ذمم (ر.ي)" color={colors.orange}/>
+          <KpiCard value={formatCurrency(totalSales)} label="إجمالي المبيعات" color={colors.cyan}/>
+          <KpiCard value={formatCurrency(totalCollected)} label="إجمالي المحصّل" color={colors.green}/>
+        </Row>
+        <Row style={{ gap:spacing.sm, marginBottom:spacing.sm }}>
+          <KpiCard value={formatNumber(totalCredit)} label="ذمم مستحقة (ر.ي)" color={colors.orange}/>
           <KpiCard value={data.collections.length} label="تحصيل معلق" color={colors.red}/>
-          <KpiCard value={formatNumber(totalInventory)} label="كروت بالمخزن" color={colors.cyan}/>
         </Row>
         <Row style={{ gap:spacing.sm, marginBottom:spacing.lg }}>
-          <KpiCard value={data.pos.length} label="نقاط البيع" color={colors.green}/>
           <KpiCard value={pendingInv} label="فاتورة معلقة" color={colors.orange}/>
-          <KpiCard value={blockedPos} label="محجوب" color={colors.red}/>
+          <KpiCard value={overdueInv} label="فاتورة متأخرة" color={colors.red}/>
+          <KpiCard value={formatNumber(totalInventory)} label="كروت بالمخزن" color={colors.purple}/>
         </Row>
-
-        {/* محافظ المندوبين */}
-        {data.wallets.length > 0 && (
-          <Card>
-            <CardHeader title="👜 محفظة الأوراق"
-              right={<Btn label="تفاصيل" variant="outline" size="xs" onPress={()=>navigation.navigate('Wallets')}/>}/>
-            <View style={{ padding:spacing.md }}>
-              {walletSummary.filter(w=>w.total>0).map((cat,i) => (
-                <View key={cat.id} style={[s.walRow, i===walletSummary.filter(w=>w.total>0).length-1&&{borderBottomWidth:0}]}>
-                  <View style={[s.walBar, {backgroundColor:cat.color}]}/>
-                  <View style={{flex:1}}>
-                    <Text style={s.walName}>{cat.name}</Text>
-                    <Text style={s.walMeta}>متبقي: {cat.remaining} • مباع: {cat.sold}</Text>
-                    <ProgressBar percent={cat.total>0?Math.round((cat.sold/cat.total)*100):0} color={cat.color} height={3}/>
-                  </View>
-                  <View style={{alignItems:'flex-end'}}>
-                    <Text style={[s.walCount, {color:cat.color}]}>{cat.remaining}</Text>
-                    <Text style={{fontSize:fontSize.xs, color:colors.t3}}>ورقة</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          </Card>
-        )}
 
         {/* آخر الفواتير */}
         <Card>
           <CardHeader title="🧾 آخر الفواتير"
-            right={<Btn label="عرض الكل" variant="outline" size="xs" onPress={()=>navigation.navigate('Invoices')}/>}/>
+            right={<Btn label="الكل" variant="outline" size="xs" onPress={()=>navigation.navigate('Invoices')}/>}/>
           <View style={{ padding:spacing.md }}>
             {data.invoices.length===0
               ? <Text style={s.empty}>لا توجد فواتير بعد</Text>
               : data.invoices.slice(0,5).map((inv,i) => (
-                <TouchableOpacity key={inv.id} style={[s.invRow, i===4&&{borderBottomWidth:0}]}
-                  onPress={()=>navigation.navigate('InvoiceDetail', {id:inv.id})}>
+                <TouchableOpacity key={inv.id}
+                  style={[s.row, i===4&&{borderBottomWidth:0}]}
+                  onPress={()=>navigation.navigate('Invoices',{screen:'InvoicesTab',params:{screen:'InvMain'}})}>
                   <View style={{flex:1}}>
                     <Row style={{gap:6}}>
                       <Text style={s.invNum}>{inv.invoice_number}</Text>
-                      {inv.synced==0 && <Text style={{fontSize:10}}>📤</Text>}
+                      {inv.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
                     </Row>
                     <Text style={s.invPos}>{inv.pos_customers?.name||'—'}</Text>
+                    <Text style={s.invMeta}>{inv.users?.name||'—'} • {formatDateShort(inv.invoice_date)}</Text>
                   </View>
                   <View style={{alignItems:'flex-end',gap:4}}>
                     <Text style={s.invAmt}>{formatCurrency(inv.total_amount)}</Text>
@@ -121,73 +92,58 @@ export default function DashboardScreen({ navigation }) {
           </View>
         </Card>
 
-        {/* المخزون */}
-        <Card>
-          <CardHeader title="📦 المخزون"
-            right={<Btn label="إدارة" variant="outline" size="xs" onPress={()=>navigation.navigate('Inventory')}/>}/>
-          <View style={{ padding:spacing.md }}>
-            {catSummary.length===0
-              ? <Text style={s.empty}>لا توجد فئات</Text>
-              : catSummary.map((cat,i) => (
-                <View key={cat.id} style={[s.catRow, i===catSummary.length-1&&{borderBottomWidth:0}]}>
-                  <View style={[s.catBar, {backgroundColor:cat.color}]}/>
-                  <View style={{flex:1}}>
-                    <Text style={s.catName}>{cat.name}</Text>
-                    <Text style={s.catMeta}>{formatCurrency(cat.price)} / ورقة</Text>
-                  </View>
-                  <Text style={[s.catCount, cat.total<15&&{color:colors.red}]}>{cat.total}</Text>
-                  {cat.total<15 && <Text style={{fontSize:12}}>⚠️</Text>}
-                </View>
-              ))
-            }
-          </View>
-        </Card>
-
-        {/* نقاط البيع */}
-        <Card>
-          <CardHeader title="🏪 نقاط البيع"
-            right={<Btn label="الكل" variant="outline" size="xs" onPress={()=>navigation.navigate('POS')}/>}/>
-          <View style={{ padding:spacing.md }}>
-            {data.pos.slice(0,4).map((pos,i) => {
-              const pct = creditPercent(pos.credit_used, pos.credit_limit);
-              const col = creditColor(pct, pos.is_blocked==1);
-              return (
-                <View key={pos.id} style={[s.posRow, i===Math.min(3,data.pos.length-1)&&{borderBottomWidth:0}]}>
-                  <View style={[s.posAv, {backgroundColor:col+'22'}]}>
-                    <Text style={[s.posAvTxt, {color:col}]}>{pos.name?.charAt(0)}</Text>
-                  </View>
-                  <View style={{flex:1}}>
-                    <Text style={s.posName}>{pos.name}</Text>
-                    <Text style={s.posMeta}>{pos.city||'—'}</Text>
-                    <ProgressBar percent={pct} color={col} height={3}/>
-                  </View>
-                  <Text style={[s.posUsed, {color:col}]}>{pct}%</Text>
-                </View>
-              );
-            })}
-          </View>
-        </Card>
-
         {/* تحصيلات معلقة */}
         {data.collections.length > 0 && (
           <Card>
             <CardHeader title="💰 تحصيلات معلقة"
-              right={<View style={[s.cntBadge, {backgroundColor:colors.orange+'22'}]}>
+              right={<View style={[s.cntBadge,{backgroundColor:colors.orange+'22'}]}>
                 <Text style={{color:colors.orange,fontSize:fontSize.xs,fontWeight:'700'}}>{data.collections.length}</Text>
               </View>}/>
             <View style={{padding:spacing.md}}>
-              {data.collections.slice(0,3).map((col,i) => (
-                <View key={col.id} style={[s.colRow, i===Math.min(2,data.collections.length-1)&&{borderBottomWidth:0}]}>
+              {data.collections.slice(0,3).map((col,i)=>(
+                <View key={col.id} style={[s.colRow,i===Math.min(2,data.collections.length-1)&&{borderBottomWidth:0}]}>
                   <View style={{flex:1}}>
-                    <Text style={s.colNum}>{col.collection_number}</Text>
+                    <Row style={{gap:6}}>
+                      <Text style={s.colNum}>{col.collection_number}</Text>
+                      {col.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
+                    </Row>
                     <Text style={s.colAgent}>{col.users?.name||'—'} • {col.pos_customers?.name||'—'}</Text>
-                    {col.invoice?.invoice_number ? <Text style={s.colInv}>فاتورة: {col.invoice.invoice_number}</Text> : null}
+                    {col.invoice?.invoice_number&&<Text style={{fontSize:fontSize.xs,color:colors.blue,marginTop:1}}>فاتورة: {col.invoice.invoice_number}</Text>}
                   </View>
                   <Text style={s.colAmt}>{formatCurrency(col.amount)}</Text>
                 </View>
               ))}
               <Btn label="اعتماد التحصيلات" variant="primary" size="sm"
-                style={{marginTop:spacing.sm}} onPress={()=>navigation.navigate('Collections')}/>
+                style={{marginTop:spacing.sm}}
+                onPress={()=>navigation.navigate('Cashier')}/>
+            </View>
+          </Card>
+        )}
+
+        {/* ملخص المحفظة إذا كان مندوب */}
+        {user?.role==='agent' && data.wallets.length>0 && (
+          <Card>
+            <CardHeader title="👜 محفظتي"
+              right={<Btn label="التفاصيل" variant="outline" size="xs" onPress={()=>navigation.navigate('Wallets')}/>}/>
+            <View style={{padding:spacing.md}}>
+              {data.wallets.slice(0,4).map((w,i)=>{
+                const remaining=w.total_cards-w.sold_cards;
+                const pct=w.total_cards>0?Math.round((w.sold_cards/w.total_cards)*100):0;
+                const col=remaining===0?colors.red:remaining<5?colors.orange:colors.green;
+                return (
+                  <View key={w.id} style={[s.walRow,i===Math.min(3,data.wallets.length-1)&&{borderBottomWidth:0}]}>
+                    <View style={{flex:1}}>
+                      <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.t1}}>{w.card_categories?.name||'—'}</Text>
+                      <Text style={{fontSize:fontSize.xs,color:colors.t3}}>{w.batches?.batch_number||'—'}</Text>
+                      <ProgressBar percent={pct} color={colors.blue} height={3}/>
+                    </View>
+                    <View style={[s.remBadge,{backgroundColor:col+'22'}]}>
+                      <Text style={{color:col,fontWeight:'800',fontSize:fontSize.lg}}>{remaining}</Text>
+                      <Text style={{color:col,fontSize:fontSize.xs}}>ورقة</Text>
+                    </View>
+                  </View>
+                );
+              })}
             </View>
           </Card>
         )}
@@ -198,30 +154,16 @@ export default function DashboardScreen({ navigation }) {
 
 const s = StyleSheet.create({
   empty: { textAlign:'center', color:colors.t3, fontSize:fontSize.sm, paddingVertical:spacing.lg },
-  invRow: { flexDirection:'row', alignItems:'center', paddingVertical:spacing.md, borderBottomWidth:1, borderBottomColor:colors.border },
+  row: { flexDirection:'row', alignItems:'center', paddingVertical:spacing.md, borderBottomWidth:1, borderBottomColor:colors.border },
   invNum: { fontSize:fontSize.md, fontWeight:'700', color:colors.cyan, marginBottom:2 },
-  invPos: { fontSize:fontSize.sm, color:colors.t2 },
+  invPos: { fontSize:fontSize.sm, fontWeight:'600', color:colors.t1 },
+  invMeta: { fontSize:fontSize.xs, color:colors.t3, marginTop:1 },
   invAmt: { fontSize:fontSize.md, fontWeight:'700', color:colors.t1 },
-  catRow: { flexDirection:'row', alignItems:'center', gap:spacing.sm, paddingVertical:spacing.sm, borderBottomWidth:1, borderBottomColor:colors.border },
-  catBar: { width:8, height:30, borderRadius:3 },
-  catName: { fontSize:fontSize.md, fontWeight:'700', color:colors.t1 },
-  catMeta: { fontSize:fontSize.xs, color:colors.t3 },
-  catCount: { fontSize:fontSize.xxl, fontWeight:'800', color:colors.t1 },
-  posRow: { flexDirection:'row', alignItems:'center', gap:spacing.md, paddingVertical:spacing.md, borderBottomWidth:1, borderBottomColor:colors.border },
-  posAv: { width:36, height:36, borderRadius:9, alignItems:'center', justifyContent:'center' },
-  posAvTxt: { fontSize:fontSize.lg, fontWeight:'800' },
-  posName: { fontSize:fontSize.md, fontWeight:'700', color:colors.t1, marginBottom:2 },
-  posMeta: { fontSize:fontSize.xs, color:colors.t3, marginBottom:3 },
-  posUsed: { fontSize:fontSize.sm, fontWeight:'700' },
   colRow: { flexDirection:'row', alignItems:'center', paddingVertical:spacing.sm, borderBottomWidth:1, borderBottomColor:colors.border },
   colNum: { fontSize:fontSize.md, fontWeight:'700', color:colors.cyan },
   colAgent: { fontSize:fontSize.xs, color:colors.t3, marginTop:2 },
-  colInv: { fontSize:fontSize.xs, color:colors.blue, marginTop:1 },
   colAmt: { fontSize:fontSize.lg, fontWeight:'800', color:colors.green },
   cntBadge: { width:24, height:24, borderRadius:12, alignItems:'center', justifyContent:'center' },
-  walRow: { flexDirection:'row', alignItems:'center', gap:spacing.sm, paddingVertical:spacing.sm, borderBottomWidth:1, borderBottomColor:colors.border },
-  walBar: { width:8, height:30, borderRadius:3 },
-  walName: { fontSize:fontSize.md, fontWeight:'700', color:colors.t1 },
-  walMeta: { fontSize:fontSize.xs, color:colors.t3, marginBottom:3 },
-  walCount: { fontSize:fontSize.xxl, fontWeight:'800' },
+  walRow: { flexDirection:'row', alignItems:'center', gap:spacing.md, paddingVertical:spacing.sm, borderBottomWidth:1, borderBottomColor:colors.border },
+  remBadge: { alignItems:'center', justifyContent:'center', padding:spacing.sm, borderRadius:radius.md, minWidth:50 },
 });

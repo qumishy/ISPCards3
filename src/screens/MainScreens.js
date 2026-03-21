@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  TextInput, RefreshControl, Alert, ScrollView, Modal,
+  TextInput, RefreshControl, Alert, ScrollView,
 } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../theme';
 import {
-  getLocalInvoices, getLocalInvoiceItems, getLocalCollections,
-  getLocalBatches, getLocalCategories, getLocalPOS,
-  approveLocalCollection, rejectLocalCollection,
-  toggleLocalPOSBlock, updatePOS, getAgentWallets,
+  getLocalInvoices, getLocalCollections, getLocalBatches,
+  getLocalCategories, getLocalPOS, getAgentWallets,
+  approveLocalCollection, rejectLocalCollection, toggleLocalPOSBlock,
 } from '../services/database';
 import { formatCurrency, formatDateShort, creditPercent, creditColor } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, KpiCard, Row, ProgressBar, Card, CardHeader } from '../components/UI';
@@ -25,25 +24,23 @@ export function InvoicesScreen({ navigation }) {
   const [tab, setTab] = useState('all');
 
   const load = useCallback(async () => {
-    const filters = tab !== 'all' ? { status: tab } : {};
-    if (user?.role === 'agent') filters.agent_id = user.id;
+    const filters = tab!=='all' ? {status:tab} : {};
+    if(user?.role==='agent') filters.agent_id=user.id;
     const data = await getLocalInvoices(filters);
-    setInvoices(data);
-    setLoading(false); setRefreshing(false);
-  }, [tab, user]);
+    setInvoices(data); setLoading(false); setRefreshing(false);
+  }, [tab,user]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(()=>{setLoading(true);load();},[load]);
 
-  const filtered = invoices.filter(inv =>
-    !search || inv.invoice_number?.includes(search) || inv.pos_customers?.name?.includes(search)
+  const filtered = invoices.filter(inv=>
+    !search||inv.invoice_number?.includes(search)||inv.pos_customers?.name?.includes(search)
   );
-
-  const total = invoices.reduce((s,i) => s+(i.total_amount||0), 0);
-  const paid = invoices.filter(i=>i.status==='paid').reduce((s,i) => s+(i.total_amount||0), 0);
+  const total = invoices.reduce((s,i)=>s+(i.total_amount||0),0);
+  const paid = invoices.filter(i=>i.status==='paid').reduce((s,i)=>s+(i.total_amount||0),0);
 
   return (
     <View style={s.screen}>
-      <SyncBar />
+      <SyncBar/>
       <View style={s.summary}>
         <View style={s.sumItem}><Text style={s.sumLabel}>الإجمالي</Text><Text style={[s.sumVal,{color:colors.cyan}]}>{formatCurrency(total)}</Text></View>
         <View style={s.sumDiv}/><View style={s.sumItem}><Text style={s.sumLabel}>مسدد</Text><Text style={[s.sumVal,{color:colors.green}]}>{formatCurrency(paid)}</Text></View>
@@ -59,12 +56,11 @@ export function InvoicesScreen({ navigation }) {
       <View style={s.searchRow}>
         <View style={s.searchBox}>
           <Text style={{fontSize:13,color:colors.t3}}>🔍</Text>
-          <TextInput style={s.searchInput} value={search} onChangeText={setSearch}
-            placeholder="بحث..." placeholderTextColor={colors.t3}/>
+          <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="بحث..." placeholderTextColor={colors.t3}/>
         </View>
         <Btn label="+ فاتورة" variant="primary" size="sm" onPress={()=>navigation.navigate('NewInvoice')}/>
       </View>
-      {loading ? <Loading /> : filtered.length===0
+      {loading ? <Loading/> : filtered.length===0
         ? <Empty icon="🧾" title="لا توجد فواتير" action="+ فاتورة جديدة" onAction={()=>navigation.navigate('NewInvoice')}/>
         : <FlatList data={filtered} keyExtractor={i=>i.id}
             contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
@@ -75,7 +71,7 @@ export function InvoicesScreen({ navigation }) {
                 <View style={{flex:1,gap:3}}>
                   <Row style={{gap:6}}>
                     <Text style={s.rowNum}>{inv.invoice_number}</Text>
-                    {inv.synced==0 && <Text style={{fontSize:10}}>📤</Text>}
+                    {inv.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
                   </Row>
                   <Text style={s.rowPos}>{inv.pos_customers?.name||'—'}</Text>
                   <Text style={s.rowMeta}>{inv.users?.name||'—'} • {formatDateShort(inv.invoice_date)}</Text>
@@ -91,86 +87,6 @@ export function InvoicesScreen({ navigation }) {
   );
 }
 
-// ── تفاصيل الفاتورة ──────────────────────────────
-export function InvoiceDetailScreen({ route, navigation }) {
-  const { id } = route.params;
-  const [invoice, setInvoice] = useState(null);
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    async function load() {
-      const invs = await getLocalInvoices();
-      const inv = invs.find(i => i.id === id);
-      const itms = await getLocalInvoiceItems(id);
-      setInvoice(inv); setItems(itms); setLoading(false);
-    }
-    load();
-  }, [id]);
-
-  if (loading) return <Loading />;
-  if (!invoice) return <Empty icon="🧾" title="الفاتورة غير موجودة"/>;
-
-  return (
-    <ScrollView style={s.screen} contentContainerStyle={{padding:spacing.md,paddingBottom:90}}>
-      <Card>
-        <CardHeader title={invoice.invoice_number}/>
-        <View style={{padding:spacing.md}}>
-          <Row style={{marginBottom:spacing.sm,justifyContent:'space-between'}}>
-            <Text style={{color:colors.t3}}>نقطة البيع</Text>
-            <Text style={{color:colors.t1,fontWeight:'700'}}>{invoice.pos_customers?.name||'—'}</Text>
-          </Row>
-          <Row style={{marginBottom:spacing.sm,justifyContent:'space-between'}}>
-            <Text style={{color:colors.t3}}>المندوب</Text>
-            <Text style={{color:colors.t1,fontWeight:'700'}}>{invoice.users?.name||'—'}</Text>
-          </Row>
-          <Row style={{marginBottom:spacing.sm,justifyContent:'space-between'}}>
-            <Text style={{color:colors.t3}}>التاريخ</Text>
-            <Text style={{color:colors.t1}}>{formatDateShort(invoice.invoice_date)}</Text>
-          </Row>
-          <Row style={{marginBottom:spacing.sm,justifyContent:'space-between'}}>
-            <Text style={{color:colors.t3}}>النوع</Text>
-            <Badge status={invoice.type}/>
-          </Row>
-          <Row style={{justifyContent:'space-between'}}>
-            <Text style={{color:colors.t3}}>الحالة</Text>
-            <Badge status={invoice.status}/>
-          </Row>
-        </View>
-      </Card>
-
-      <Card>
-        <CardHeader title="📋 البنود"
-          right={invoice.status==='pending'&&<Btn label="+ بند" variant="primary" size="xs"
-            onPress={()=>navigation.navigate('AddInvoiceItem',{invoiceId:id})}/>}/>
-        <View style={{padding:spacing.md}}>
-          {items.length===0
-            ? <Text style={{textAlign:'center',color:colors.t3,paddingVertical:spacing.lg}}>لا توجد بنود — أضف بند</Text>
-            : items.map((item,i) => (
-              <View key={item.id} style={[{paddingVertical:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.border},i===items.length-1&&{borderBottomWidth:0}]}>
-                <Row style={{justifyContent:'space-between',marginBottom:4}}>
-                  <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.t1}}>{item.cat_name||'—'}</Text>
-                  <Text style={{fontSize:fontSize.lg,fontWeight:'800',color:colors.green}}>{formatCurrency(item.total_price)}</Text>
-                </Row>
-                <Text style={{fontSize:fontSize.xs,color:colors.t3}}>
-                  من {item.from_card}-{item.serial_number} → {item.to_card}-{item.serial_number} • {item.quantity} ورقة × {formatCurrency(item.unit_price)}
-                </Text>
-              </View>
-            ))
-          }
-        </View>
-      </Card>
-
-      <View style={{backgroundColor:colors.card2,borderRadius:radius.md,padding:spacing.lg,borderWidth:1,borderColor:colors.border2}}>
-        <Row style={{justifyContent:'space-between'}}>
-          <Text style={{fontSize:fontSize.xl,fontWeight:'700',color:colors.t2}}>الإجمالي</Text>
-          <Text style={{fontSize:22,fontWeight:'800',color:colors.green}}>{formatCurrency(invoice.total_amount)}</Text>
-        </Row>
-      </View>
-    </ScrollView>
-  );
-}
-
 // ── التحصيلات ────────────────────────────────────
 export function CollectionsScreen({ navigation }) {
   const { can } = useAuth();
@@ -179,36 +95,32 @@ export function CollectionsScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState('pending');
 
-  const load = useCallback(async () => {
-    const data = await getLocalCollections();
+  const load = useCallback(async()=>{
+    const data=await getLocalCollections();
     setCols(data); setLoading(false); setRefreshing(false);
-  }, []);
+  },[]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(()=>{load();},[load]);
 
-  const handleApprove = (id, amount) => {
-    Alert.alert('اعتماد التحصيل', `هل تؤكد استلام ${formatCurrency(amount)}؟`, [
-      {text:'إلغاء',style:'cancel'},
-      {text:'نعم اعتماد',onPress:async()=>{await approveLocalCollection(id);load();}},
-    ]);
-  };
-  const handleReject = (id) => {
-    Alert.alert('رفض التحصيل','هل تريد رفض هذا الإشعار؟',[
-      {text:'إلغاء',style:'cancel'},
-      {text:'رفض',style:'destructive',onPress:async()=>{await rejectLocalCollection(id,'مرفوض');load();}},
-    ]);
-  };
+  const handleApprove=(id,amount)=>Alert.alert('اعتماد التحصيل',`هل تؤكد استلام ${formatCurrency(amount)}؟`,[
+    {text:'إلغاء',style:'cancel'},
+    {text:'نعم اعتماد',onPress:async()=>{await approveLocalCollection(id);load();}},
+  ]);
+  const handleReject=(id)=>Alert.alert('رفض التحصيل','هل تريد رفض هذا الإشعار؟',[
+    {text:'إلغاء',style:'cancel'},
+    {text:'رفض',style:'destructive',onPress:async()=>{await rejectLocalCollection(id,'مرفوض');load();}},
+  ]);
 
-  const pending = cols.filter(c=>c.status==='pending');
-  const approved = cols.filter(c=>c.status==='approved');
-  const display = tab==='pending'?pending:tab==='approved'?approved:cols;
-  const totalApproved = approved.reduce((s,c)=>s+(c.amount||0),0);
-  const totalPending = pending.reduce((s,c)=>s+(c.amount||0),0);
-  const methodLabel = m=>({cash:'نقدي',transfer:'تحويل',check:'شيك'}[m]||m);
+  const pending=cols.filter(c=>c.status==='pending');
+  const approved=cols.filter(c=>c.status==='approved');
+  const display=tab==='pending'?pending:tab==='approved'?approved:cols;
+  const totalPending=pending.reduce((s,c)=>s+(c.amount||0),0);
+  const totalApproved=approved.reduce((s,c)=>s+(c.amount||0),0);
+  const methodLabel=m=>({cash:'نقدي',transfer:'تحويل',check:'شيك'}[m]||m);
 
   return (
     <View style={s.screen}>
-      <SyncBar />
+      <SyncBar/>
       <View style={s.kpiRow}>
         <KpiCard value={pending.length} label="معلق" color={colors.orange}/>
         <KpiCard value={formatCurrency(totalPending)} label="قيد الانتظار" color={colors.orange}/>
@@ -225,7 +137,7 @@ export function CollectionsScreen({ navigation }) {
           <Text style={{color:colors.blue,fontWeight:'700',fontSize:fontSize.sm}}>+ قبض</Text>
         </TouchableOpacity>
       </View>
-      {loading ? <Loading /> : display.length===0
+      {loading ? <Loading/> : display.length===0
         ? <Empty icon="💰" title={tab==='pending'?'✅ لا تحصيلات معلقة':'لا توجد تحصيلات'}
             action="+ إشعار قبض" onAction={()=>navigation.navigate('NewCollection')}/>
         : <ScrollView contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
@@ -235,7 +147,8 @@ export function CollectionsScreen({ navigation }) {
                 <View style={s.apt}>
                   <Row style={{gap:6}}>
                     <Text style={s.colNum}>{col.collection_number}</Text>
-                    {col.synced==0 && <Text style={{fontSize:10}}>📤</Text>}
+                    {col.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
+                    <Text style={{fontSize:10,color:colors.t3}}>• {formatDateShort(col.collection_date)}</Text>
                   </Row>
                   <Badge status={col.status}/>
                 </View>
@@ -244,14 +157,12 @@ export function CollectionsScreen({ navigation }) {
                   <View style={s.colDetail}><Text style={s.colDLabel}>المندوب</Text><Text style={s.colDVal}>{col.users?.name||'—'}</Text></View>
                   <View style={s.colDetail}><Text style={s.colDLabel}>نقطة البيع</Text><Text style={s.colDVal}>{col.pos_customers?.name||'—'}</Text></View>
                   <View style={s.colDetail}><Text style={s.colDLabel}>الطريقة</Text><Text style={s.colDVal}>{methodLabel(col.method)}</Text></View>
-                  {col.invoice?.invoice_number && (
-                    <View style={s.colDetail}><Text style={s.colDLabel}>الفاتورة</Text><Text style={[s.colDVal,{color:colors.blue}]}>{col.invoice.invoice_number}</Text></View>
-                  )}
+                  {col.invoice?.invoice_number&&<View style={s.colDetail}><Text style={s.colDLabel}>الفاتورة</Text><Text style={[s.colDVal,{color:colors.blue}]}>{col.invoice.invoice_number}</Text></View>}
                 </View>
-                {col.status==='pending' && can('canApproveCollection') && (
+                {col.status==='pending'&&can('canApproveCollection')&&(
                   <View style={{flexDirection:'row',gap:spacing.sm,marginTop:spacing.sm}}>
-                    <Btn label="✓ اعتماد واستلام" variant="success" size="sm" style={{flex:1}} onPress={()=>handleApprove(col.id,col.amount)}/>
-                    <Btn label="✗ رفض" variant="danger" size="sm" style={{flex:1}} onPress={()=>handleReject(col.id)}/>
+                    <Btn label="✅ اعتماد واستلام" variant="success" size="sm" style={{flex:1}} onPress={()=>handleApprove(col.id,col.amount)}/>
+                    <Btn label="❌ رفض" variant="danger" size="sm" style={{flex:1}} onPress={()=>handleReject(col.id)}/>
                   </View>
                 )}
               </View>
@@ -264,38 +175,35 @@ export function CollectionsScreen({ navigation }) {
 
 // ── المخزون ──────────────────────────────────────
 export function InventoryScreen({ navigation }) {
-  const [batches, setBatches] = useState([]);
-  const [cats, setCats] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [batches,setBatches]=useState([]);
+  const [cats,setCats]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [refreshing,setRefreshing]=useState(false);
+  const load=useCallback(async()=>{
+    const [b,c]=await Promise.all([getLocalBatches(),getLocalCategories()]);
+    setBatches(b);setCats(c);setLoading(false);setRefreshing(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
 
-  const load = useCallback(async () => {
-    const [b,c] = await Promise.all([getLocalBatches(), getLocalCategories()]);
-    setBatches(b); setCats(c); setLoading(false); setRefreshing(false);
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const catColors = [colors.blue, colors.cyan, colors.purple, colors.green];
-  const catSummary = cats.map((cat,i) => ({
-    ...cat, color: catColors[i%catColors.length],
-    total: batches.filter(b=>b.category_id===cat.id).reduce((s,b)=>s+(b.available_cards||0),0),
+  const catColors=[colors.blue,colors.cyan,colors.purple,colors.green];
+  const catSummary=cats.map((cat,i)=>({
+    ...cat,color:catColors[i%catColors.length],
+    total:batches.filter(b=>b.category_id===cat.id).reduce((s,b)=>s+(b.available_cards||0),0),
   }));
 
-  if (loading) return <Loading />;
+  if(loading) return <Loading/>;
   return (
     <View style={s.screen}>
-      <SyncBar />
+      <SyncBar/>
       <ScrollView contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}>
         <View style={s.catGrid}>
           {catSummary.map(cat=>(
-            <View key={cat.id} style={[s.catCard,{borderTopColor:cat.color,borderTopWidth:2}]}>
-              <View style={[s.catIcon,{backgroundColor:cat.color+'22'}]}><Text style={{fontSize:20}}>📦</Text></View>
+            <View key={cat.id} style={[s.catCard,{borderTopColor:cat.color,borderTopWidth:3}]}>
               <Text style={[s.catTotal,cat.total<15&&{color:colors.red}]}>{cat.total}</Text>
               <Text style={s.catNameS}>{cat.name}</Text>
               <Text style={s.catPrice}>{formatCurrency(cat.price)}/ورقة</Text>
-              {cat.total<15&&<View style={s.lowBadge}><Text style={{color:colors.red,fontSize:fontSize.xs,fontWeight:'700'}}>⚠️ حرج</Text></View>}
+              {cat.total<15&&<Text style={{fontSize:10,color:colors.red,marginTop:4}}>⚠️ حرج</Text>}
             </View>
           ))}
         </View>
@@ -306,16 +214,15 @@ export function InventoryScreen({ navigation }) {
         {batches.length===0
           ? <Empty icon="📦" title="لا توجد دفعات" action="+ دفعة جديدة" onAction={()=>navigation.navigate('AddBatch')}/>
           : batches.map(batch=>{
-            const cat = cats.find(c=>c.id===batch.category_id);
-            const catIdx = cats.findIndex(c=>c.id===batch.category_id);
-            const col = catColors[catIdx%catColors.length]||colors.blue;
-            const pct = batch.total_cards>0?Math.round((batch.available_cards/batch.total_cards)*100):0;
+            const cat=cats.find(c=>c.id===batch.category_id);
+            const catIdx=cats.findIndex(c=>c.id===batch.category_id);
+            const col=catColors[catIdx%catColors.length]||colors.blue;
+            const pct=batch.total_cards>0?Math.round((batch.available_cards/batch.total_cards)*100):0;
             return (
-              <TouchableOpacity key={batch.id} style={s.batchCard}
-                onPress={()=>navigation.navigate('EditBatch',{id:batch.id})}>
+              <View key={batch.id} style={s.batchCard}>
                 <Row style={{marginBottom:spacing.sm}}>
                   <Text style={[s.batchNum,{flex:1}]}>{batch.batch_number}</Text>
-                  {batch.synced==0&&<Text style={{fontSize:10,marginLeft:4}}>📤</Text>}
+                  {batch.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
                   <View style={[s.catChip,{backgroundColor:col+'22'}]}><Text style={[s.catChipTxt,{color:col}]}>{cat?.name||'—'}</Text></View>
                   <Badge status={batch.status}/>
                 </Row>
@@ -330,7 +237,7 @@ export function InventoryScreen({ navigation }) {
                   </View>
                   <Text style={{fontSize:fontSize.xs,fontWeight:'700',color:col}}>{pct}%</Text>
                 </View>
-              </TouchableOpacity>
+              </View>
             );
           })
         }
@@ -341,56 +248,46 @@ export function InventoryScreen({ navigation }) {
 
 // ── نقاط البيع ───────────────────────────────────
 export function POSScreen({ navigation }) {
-  const [pos, setPos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [search, setSearch] = useState('');
-
-  const load = useCallback(async () => {
-    const data = await getLocalPOS();
-    setPos(data); setLoading(false); setRefreshing(false);
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const handleToggleBlock = (id, name, blocked) => {
-    Alert.alert(blocked?'رفع الحجب':'حجب نقطة البيع',
-      blocked?`رفع الحجب عن "${name}"؟`:`حجب "${name}"؟`,
-      [{text:'إلغاء',style:'cancel'},
-       {text:blocked?'رفع الحجب':'حجب',style:blocked?'default':'destructive',
-        onPress:async()=>{await toggleLocalPOSBlock(id,!blocked);load();}}]
-    );
-  };
-
-  const filtered = pos.filter(p => !search || p.name?.includes(search) || p.owner_name?.includes(search));
-
+  const [pos,setPos]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [refreshing,setRefreshing]=useState(false);
+  const [search,setSearch]=useState('');
+  const load=useCallback(async()=>{
+    const data=await getLocalPOS();
+    setPos(data);setLoading(false);setRefreshing(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+  const handleToggleBlock=(id,name,blocked)=>Alert.alert(blocked?'رفع الحجب':'حجب نقطة البيع',
+    blocked?`رفع الحجب عن "${name}"؟`:`حجب "${name}"؟`,
+    [{text:'إلغاء',style:'cancel'},{text:blocked?'رفع الحجب':'حجب',style:blocked?'default':'destructive',onPress:async()=>{await toggleLocalPOSBlock(id,!blocked);load();}}]
+  );
+  const filtered=pos.filter(p=>!search||p.name?.includes(search)||p.owner_name?.includes(search));
   return (
     <View style={s.screen}>
-      <SyncBar />
+      <SyncBar/>
       <View style={s.searchRow}>
         <View style={s.searchBox}>
           <Text style={{fontSize:13,color:colors.t3}}>🔍</Text>
-          <TextInput style={s.searchInput} value={search} onChangeText={setSearch}
-            placeholder="بحث..." placeholderTextColor={colors.t3}/>
+          <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="بحث..." placeholderTextColor={colors.t3}/>
         </View>
         <Btn label="+ نقطة بيع" variant="primary" size="sm" onPress={()=>navigation.navigate('NewPOS')}/>
       </View>
-      {loading ? <Loading /> : filtered.length===0
+      {loading ? <Loading/> : filtered.length===0
         ? <Empty icon="🏪" title="لا توجد نقاط بيع" action="+ نقطة بيع جديدة" onAction={()=>navigation.navigate('NewPOS')}/>
         : <FlatList data={filtered} keyExtractor={i=>i.id}
             contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}
             renderItem={({item:p})=>{
-              const pct = creditPercent(p.credit_used,p.credit_limit);
-              const col = creditColor(pct, p.is_blocked==1);
+              const pct=creditPercent(p.credit_used,p.credit_limit);
+              const col=creditColor(pct,p.is_blocked==1);
               return (
                 <TouchableOpacity style={[s.posCard,p.is_blocked==1&&s.posBlocked]} activeOpacity={0.85}
                   onPress={()=>navigation.navigate('EditPOS',{id:p.id})}>
                   <Row style={{marginBottom:spacing.md}}>
-                    <View style={[s.posAv2,{backgroundColor:col+'22'}]}><Text style={[s.posAvTxt2,{color:col}]}>{p.name?.charAt(0)}</Text></View>
+                    <View style={[s.posAv,{backgroundColor:col+'22'}]}><Text style={[s.posAvTxt,{color:col}]}>{p.name?.charAt(0)}</Text></View>
                     <View style={{flex:1}}>
-                      <Text style={s.posName2}>{p.name}</Text>
-                      <Text style={s.posMeta2}>{p.owner_name||'—'} • {p.city||'—'}</Text>
+                      <Text style={s.posName}>{p.name}</Text>
+                      <Text style={s.posMeta}>{p.owner_name||'—'} • {p.city||'—'}</Text>
                     </View>
                     <Badge status={p.is_blocked==1?'محجوب':pct>=80?'تحذير':'نشط'}/>
                   </Row>
@@ -415,43 +312,38 @@ export function POSScreen({ navigation }) {
 
 // ── محافظ المندوبين ───────────────────────────────
 export function WalletsScreen({ navigation }) {
-  const { user, can } = useAuth();
-  const [wallets, setWallets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const load = useCallback(async () => {
-    const data = await getAgentWallets(user?.role==='agent' ? user.id : null);
-    setWallets(data); setLoading(false); setRefreshing(false);
-  }, [user]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const catColors = [colors.blue, colors.cyan, colors.purple, colors.green];
+  const {user,can}=useAuth();
+  const [wallets,setWallets]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [refreshing,setRefreshing]=useState(false);
+  const load=useCallback(async()=>{
+    const data=await getAgentWallets(user?.role==='agent'?user.id:null);
+    setWallets(data);setLoading(false);setRefreshing(false);
+  },[user]);
+  useEffect(()=>{load();},[load]);
 
   return (
     <View style={s.screen}>
-      <SyncBar />
-      {can('canManageWallets') && (
-        <View style={{padding:spacing.md, paddingBottom:0}}>
+      <SyncBar/>
+      {can('canManageWallets')&&(
+        <View style={{padding:spacing.md,paddingBottom:0}}>
           <Btn label="+ توزيع أوراق على مندوب" variant="primary"
             style={{justifyContent:'center'}} onPress={()=>navigation.navigate('AssignWallet')}/>
         </View>
       )}
-      {loading ? <Loading /> : wallets.length===0
-        ? <Empty icon="👜" title="لا توجد محافظ" sub="يقوم المدير بتوزيع الأوراق على المندوبين"
+      {loading ? <Loading/> : wallets.length===0
+        ? <Empty icon="👜" title="لا توجد محافظ"
             action={can('canManageWallets')?"+ توزيع أوراق":null}
             onAction={()=>navigation.navigate('AssignWallet')}/>
         : <FlatList data={wallets} keyExtractor={i=>i.id}
             contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}
             renderItem={({item:w})=>{
-              const pct = w.total_cards>0?Math.round((w.sold_cards/w.total_cards)*100):0;
-              const remaining = w.total_cards - w.sold_cards;
-              const col = remaining===0?colors.red:remaining<5?colors.orange:colors.green;
+              const remaining=w.total_cards-w.sold_cards;
+              const pct=w.total_cards>0?Math.round((w.sold_cards/w.total_cards)*100):0;
+              const col=remaining===0?colors.red:remaining<5?colors.orange:colors.green;
               return (
-                <TouchableOpacity style={s.walCard} activeOpacity={0.85}
-                  onPress={()=>can('canManageWallets')&&remaining>0?navigation.navigate('EditWallet',{id:w.id}):null}>
+                <View style={s.walCard}>
                   <Row style={{marginBottom:spacing.sm}}>
                     <View style={{flex:1}}>
                       <Text style={{fontSize:fontSize.lg,fontWeight:'700',color:colors.t1}}>{w.card_categories?.name||'—'}</Text>
@@ -459,22 +351,27 @@ export function WalletsScreen({ navigation }) {
                     </View>
                     {remaining===0
                       ? <Badge status="depleted" label="نفدت"/>
-                      : <View style={[s.remBadge,{backgroundColor:col+'22'}]}><Text style={{color:col,fontWeight:'800',fontSize:fontSize.md}}>{remaining}</Text><Text style={{color:col,fontSize:fontSize.xs}}>ورقة</Text></View>
+                      : <View style={[s.remBadge,{backgroundColor:col+'22'}]}>
+                          <Text style={{color:col,fontWeight:'800',fontSize:fontSize.md}}>{remaining}</Text>
+                          <Text style={{color:col,fontSize:fontSize.xs}}>ورقة</Text>
+                        </View>
                     }
                   </Row>
-                  <View style={{flexDirection:'row',gap:spacing.lg,marginBottom:spacing.sm}}>
-                    <View><Text style={{fontSize:fontSize.xs,color:colors.t3}}>من</Text><Text style={{fontWeight:'700',color:colors.cyan}}>{w.from_card}-{w.batches?.serial_number}</Text></View>
-                    <View><Text style={{fontSize:fontSize.xs,color:colors.t3}}>إلى</Text><Text style={{fontWeight:'700',color:colors.cyan}}>{w.to_card}-{w.batches?.serial_number}</Text></View>
-                    <View><Text style={{fontSize:fontSize.xs,color:colors.t3}}>إجمالي</Text><Text style={{fontWeight:'700',color:colors.t1}}>{w.total_cards}</Text></View>
-                    <View><Text style={{fontSize:fontSize.xs,color:colors.t3}}>مباع</Text><Text style={{fontWeight:'700',color:colors.orange}}>{w.sold_cards}</Text></View>
-                  </View>
+                  <Row style={{justifyContent:'space-around',marginBottom:spacing.sm}}>
+                    {[{l:'إجمالي',v:w.total_cards,c:colors.t1},{l:'مباع',v:w.sold_cards,c:colors.orange},{l:'متبقي',v:remaining,c:col}].map((st,i)=>(
+                      <View key={i} style={{alignItems:'center'}}>
+                        <Text style={{fontSize:fontSize.xs,color:colors.t3}}>{st.l}</Text>
+                        <Text style={{fontSize:fontSize.xxl,fontWeight:'800',color:st.c}}>{st.v}</Text>
+                      </View>
+                    ))}
+                  </Row>
                   <View style={{flexDirection:'row',alignItems:'center',gap:spacing.sm}}>
                     <View style={{flex:1,height:6,backgroundColor:colors.border,borderRadius:3,overflow:'hidden'}}>
                       <View style={{height:6,width:pct+'%',backgroundColor:pct>=100?colors.red:colors.blue,borderRadius:3}}/>
                     </View>
                     <Text style={{fontSize:fontSize.xs,fontWeight:'700',color:pct>=100?colors.red:colors.t2}}>{pct}%</Text>
                   </View>
-                </TouchableOpacity>
+                </View>
               );
             }}/>
       }
@@ -482,7 +379,9 @@ export function WalletsScreen({ navigation }) {
   );
 }
 
-// ── Styles ────────────────────────────────────────
+// ── تفاصيل الفاتورة من MainScreens ───────────────
+export { InvoiceDetailScreen } from './FormScreens';
+
 const s = StyleSheet.create({
   screen:{flex:1,backgroundColor:colors.bg},
   summary:{flexDirection:'row',backgroundColor:colors.bg2,borderBottomWidth:1,borderBottomColor:colors.border,paddingVertical:spacing.sm},
@@ -507,18 +406,16 @@ const s = StyleSheet.create({
   apc:{backgroundColor:colors.card2,borderWidth:1,borderColor:colors.border2,borderRadius:radius.md,padding:spacing.lg,marginBottom:spacing.sm},
   apt:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:spacing.sm},
   colNum:{fontSize:fontSize.md,fontWeight:'700',color:colors.cyan},
-  colAmt:{fontSize:26,fontWeight:'800',color:colors.green,marginBottom:spacing.md},
+  colAmt:{fontSize:24,fontWeight:'800',color:colors.green,marginBottom:spacing.md},
   colDetails:{flexDirection:'row',flexWrap:'wrap',gap:spacing.sm,marginBottom:spacing.sm},
   colDetail:{backgroundColor:colors.bg,borderRadius:radius.sm,padding:spacing.sm,minWidth:'45%'},
   colDLabel:{fontSize:fontSize.xs,color:colors.t3,marginBottom:2},
   colDVal:{fontSize:fontSize.md,fontWeight:'600',color:colors.t1},
   catGrid:{flexDirection:'row',flexWrap:'wrap',gap:spacing.sm,marginBottom:spacing.lg},
   catCard:{width:'47.5%',backgroundColor:colors.card,borderWidth:1,borderColor:colors.border,borderRadius:radius.md,padding:spacing.md,alignItems:'center'},
-  catIcon:{width:44,height:44,borderRadius:12,alignItems:'center',justifyContent:'center',marginBottom:spacing.sm},
   catTotal:{fontSize:28,fontWeight:'800',color:colors.t1},
-  catNameS:{fontSize:fontSize.md,fontWeight:'700',color:colors.t2,marginTop:2},
+  catNameS:{fontSize:fontSize.md,fontWeight:'700',color:colors.t2,marginTop:4},
   catPrice:{fontSize:fontSize.xs,color:colors.t3,marginTop:2},
-  lowBadge:{marginTop:spacing.sm,backgroundColor:colors.red+'22',paddingHorizontal:spacing.sm,paddingVertical:2,borderRadius:radius.full},
   secHeader:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginBottom:spacing.md},
   secTitle:{fontSize:fontSize.xl,fontWeight:'800',color:colors.t1},
   batchCard:{backgroundColor:colors.card2,borderWidth:1,borderColor:colors.border,borderRadius:radius.md,padding:spacing.md,marginBottom:spacing.sm},
@@ -527,10 +424,10 @@ const s = StyleSheet.create({
   catChipTxt:{fontSize:fontSize.xs,fontWeight:'700'},
   posCard:{backgroundColor:colors.card,borderWidth:1,borderColor:colors.border,borderRadius:radius.md,padding:spacing.md,marginBottom:spacing.sm},
   posBlocked:{borderColor:colors.red+'44'},
-  posAv2:{width:44,height:44,borderRadius:12,alignItems:'center',justifyContent:'center',marginLeft:spacing.md},
-  posAvTxt2:{fontSize:18,fontWeight:'800'},
-  posName2:{fontSize:fontSize.xl,fontWeight:'700',color:colors.t1},
-  posMeta2:{fontSize:fontSize.xs,color:colors.t3,marginTop:2},
+  posAv:{width:44,height:44,borderRadius:12,alignItems:'center',justifyContent:'center',marginLeft:spacing.md},
+  posAvTxt:{fontSize:18,fontWeight:'800'},
+  posName:{fontSize:fontSize.xl,fontWeight:'700',color:colors.t1},
+  posMeta:{fontSize:fontSize.xs,color:colors.t3,marginTop:2},
   walCard:{backgroundColor:colors.card,borderWidth:1,borderColor:colors.border,borderRadius:radius.md,padding:spacing.md,marginBottom:spacing.sm},
   remBadge:{alignItems:'center',justifyContent:'center',padding:spacing.sm,borderRadius:radius.md,minWidth:50},
 });
