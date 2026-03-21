@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, RefreshControl } from 'react-native';
 import { colors, spacing, radius, fontSize } from '../theme';
-import { supabase } from '../services/supabase';
+import { getLocalCollections, approveLocalCollection, rejectLocalCollection } from '../services/database';
 import { formatCurrency, formatDateShort } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, KpiCard, Row } from '../components/UI';
+import SyncBar from '../components/SyncBar';
 
 export default function CashierScreen() {
   const [tab, setTab] = useState('pending');
@@ -12,53 +13,38 @@ export default function CashierScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    try {
-      const { data } = await supabase
-        .from('collections')
-        .select('*,users(name),pos_customers(name),invoices(invoice_number,net_amount)')
-        .eq('active', true)
-        .order('created_at', { ascending: false });
-      setCols(data || []);
-    } catch(e) { console.log('Cashier error:', e.message); }
-    setLoading(false); setRefreshing(false);
+    const data = await getLocalCollections();
+    setCols(data); setLoading(false); setRefreshing(false);
   }, []);
-
   useEffect(() => { load(); }, [load]);
 
-  const pending = cols.filter(c => c.status === 'pending');
-  const approved = cols.filter(c => c.status === 'approved');
-  const rejected = cols.filter(c => c.status === 'rejected');
-  const display = tab==='pending'?pending : tab==='approved'?approved : tab==='rejected'?rejected : cols;
+  const pending = cols.filter(c=>c.status==='pending');
+  const approved = cols.filter(c=>c.status==='approved');
+  const rejected = cols.filter(c=>c.status==='rejected');
+  const display = tab==='pending'?pending:tab==='approved'?approved:tab==='rejected'?rejected:cols;
 
-  const totalPending = pending.reduce((s,c) => s+(c.amount||0), 0);
-  const totalApproved = approved.reduce((s,c) => s+(c.amount||0), 0);
+  const totalPending = pending.reduce((s,c)=>s+(c.amount||0),0);
+  const totalApproved = approved.reduce((s,c)=>s+(c.amount||0),0);
 
-  const handleApprove = (id, amount) => Alert.alert('اعتماد التحصيل', `هل تؤكد استلام ${formatCurrency(amount)}؟`, [
-    { text:'إلغاء', style:'cancel' },
-    { text:'✅ نعم اعتماد', onPress: async () => {
-      await supabase.from('collections').update({ status:'approved', approved_at: new Date().toISOString() }).eq('id', id);
-      load();
-    }},
+  const handleApprove = (id,amount) => Alert.alert('اعتماد التحصيل',`هل تؤكد استلام ${formatCurrency(amount)}؟`,[
+    {text:'إلغاء',style:'cancel'},
+    {text:'✅ نعم اعتماد',onPress:async()=>{await approveLocalCollection(id);load();}},
   ]);
-
-  const handleReject = (id) => Alert.alert('رفض التحصيل', 'هل تريد رفض هذا الإشعار؟', [
-    { text:'إلغاء', style:'cancel' },
-    { text:'❌ رفض', style:'destructive', onPress: async () => {
-      await supabase.from('collections').update({ status:'rejected', rejection_reason:'مرفوض من المحاسب' }).eq('id', id);
-      load();
-    }},
+  const handleReject = (id) => Alert.alert('رفض التحصيل','هل تريد رفض هذا الإشعار؟',[
+    {text:'إلغاء',style:'cancel'},
+    {text:'❌ رفض',style:'destructive',onPress:async()=>{await rejectLocalCollection(id,'مرفوض من المحاسب');load();}},
   ]);
+  const methodLabel = m=>({cash:'نقدي',transfer:'تحويل',check:'شيك'}[m]||m);
 
-  const methodLabel = m => ({ cash:'نقدي', transfer:'تحويل', check:'شيك' }[m] || m);
-
-  if (loading) return <Loading />;
+  if (loading) return <Loading/>;
 
   return (
     <View style={s.screen}>
+      <SyncBar/>
       <View style={s.kpiRow}>
-        <KpiCard value={pending.length} label="قبوض معلقة" color={colors.orange} />
-        <KpiCard value={formatCurrency(totalPending)} label="مبلغ المعلق" color={colors.orange} />
-        <KpiCard value={formatCurrency(totalApproved)} label="إجمالي المحصّل" color={colors.green} />
+        <KpiCard value={pending.length} label="قبوض معلقة" color={colors.orange}/>
+        <KpiCard value={formatCurrency(totalPending)} label="مبلغ المعلق" color={colors.orange}/>
+        <KpiCard value={formatCurrency(totalApproved)} label="إجمالي المحصّل" color={colors.green}/>
       </View>
       <View style={s.tabs}>
         {[
@@ -66,42 +52,37 @@ export default function CashierScreen() {
           {k:'approved',l:`معتمدة (${approved.length})`},
           {k:'rejected',l:`مرفوضة (${rejected.length})`},
           {k:'all',     l:`الكل (${cols.length})`},
-        ].map(t => (
-          <TouchableOpacity key={t.k} style={[s.tab, tab===t.k&&s.tabAct]} onPress={() => setTab(t.k)}>
-            <Text style={[s.tabTxt, tab===t.k&&s.tabTxtAct]}>{t.l}</Text>
+        ].map(t=>(
+          <TouchableOpacity key={t.k} style={[s.tab,tab===t.k&&s.tabAct]} onPress={()=>setTab(t.k)}>
+            <Text style={[s.tabTxt,tab===t.k&&s.tabTxtAct]}>{t.l}</Text>
           </TouchableOpacity>
         ))}
       </View>
-      <ScrollView contentContainerStyle={{ padding:spacing.md, paddingBottom:90 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.blue} />}>
-        {display.length === 0
-          ? <Empty icon={tab==='pending'?'✅':'💰'} title={tab==='pending'?'لا توجد قبوض معلقة':'لا توجد تحصيلات'} />
-          : display.map(col => (
+      <ScrollView contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}>
+        {display.length===0
+          ? <Empty icon={tab==='pending'?'✅':'💰'} title={tab==='pending'?'لا توجد قبوض معلقة':'لا توجد تحصيلات'}/>
+          : display.map(col=>(
             <View key={col.id} style={s.card}>
               <Row style={s.cardTop}>
                 <Text style={s.num}>{col.collection_number}</Text>
                 <Text style={s.date}>{formatDateShort(col.collection_date)}</Text>
-                <Badge status={col.status} />
+                <Badge status={col.status}/>
               </Row>
               <Text style={s.amount}>{formatCurrency(col.amount)}</Text>
               <View style={s.grid}>
                 <View style={s.gi}><Text style={s.gl}>المندوب</Text><Text style={s.gv}>{col.users?.name||'—'}</Text></View>
                 <View style={s.gi}><Text style={s.gl}>نقطة البيع</Text><Text style={s.gv}>{col.pos_customers?.name||'—'}</Text></View>
                 <View style={s.gi}><Text style={s.gl}>الطريقة</Text><Text style={s.gv}>{methodLabel(col.method)}</Text></View>
-                {col.invoices?.invoice_number && (
-                  <View style={s.gi}>
-                    <Text style={s.gl}>الفاتورة</Text>
-                    <Text style={[s.gv,{color:colors.blue}]}>{col.invoices.invoice_number}</Text>
-                  </View>
-                )}
+                {col.invoice?.invoice_number&&<View style={s.gi}><Text style={s.gl}>الفاتورة</Text><Text style={[s.gv,{color:colors.blue}]}>{col.invoice.invoice_number}</Text></View>}
               </View>
-              {col.status==='rejected' && col.rejection_reason && (
+              {col.status==='rejected'&&col.rejection_reason&&(
                 <Text style={{fontSize:fontSize.xs,color:colors.red,marginTop:spacing.xs}}>سبب الرفض: {col.rejection_reason}</Text>
               )}
-              {col.status==='pending' && (
-                <Row style={{ gap:spacing.sm, marginTop:spacing.sm }}>
-                  <Btn label="✅ اعتماد واستلام" variant="success" size="sm" style={{flex:1}} onPress={() => handleApprove(col.id, col.amount)} />
-                  <Btn label="❌ رفض" variant="danger" size="sm" style={{flex:1}} onPress={() => handleReject(col.id)} />
+              {col.status==='pending'&&(
+                <Row style={{gap:spacing.sm,marginTop:spacing.sm}}>
+                  <Btn label="✅ اعتماد واستلام" variant="success" size="sm" style={{flex:1}} onPress={()=>handleApprove(col.id,col.amount)}/>
+                  <Btn label="❌ رفض" variant="danger" size="sm" style={{flex:1}} onPress={()=>handleReject(col.id)}/>
                 </Row>
               )}
             </View>
